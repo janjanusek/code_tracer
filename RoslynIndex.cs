@@ -248,7 +248,7 @@ public class RoslynIndex
     /// vola s vysledkom find_symbol/outline a potom interpretuje vystup.
     /// </summary>
     public async Task<string> FindPath(string fromClass, string fromMethod, string toClass, string toMethod,
-                                       int maxNodes = 3000)
+                                       int maxNodes = 3000, bool withBodies = false, string? repoUrl = null)
     {
         var start = await ResolveMethod(fromClass, fromMethod);
         var target = await ResolveMethod(toClass, toMethod);
@@ -288,16 +288,7 @@ public class RoslynIndex
                         node = calledBy[node];
                         path.Add(node);
                     }
-                    var sb = new System.Text.StringBuilder();
-                    sb.AppendLine($"PATH FOUND ({path.Count} nodes):");
-                    for (int i = 0; i < path.Count; i++)
-                    {
-                        var loc = path[i].Locations.FirstOrDefault(l => l.IsInSource);
-                        var where = loc != null ? Rel(loc) : "?";
-                        var arrow = i < path.Count - 1 ? "  -->" : "";
-                        sb.AppendLine($"  {i + 1}. {Sig(path[i])}   {where}{arrow}");
-                    }
-                    return sb.ToString();
+                    return await RenderPath(path, withBodies, repoUrl);
                 }
                 queue.Enqueue(caller);
             }
@@ -305,6 +296,105 @@ public class RoslynIndex
         return $"path not found (explored {explored} nodes). " +
                "The call may go through interface/DI/reflection/events - try find_callers manually " +
                "or find_callees from the source going down.";
+    }
+
+    /// Vykresli najdenu cestu. withBodies=false -> kompaktny zoznam (pre model aj default trace).
+    /// withBodies=true -> medzi kroky vlozi telo metody OD zaciatku PO miesto volania dalsieho kroku.
+    private async Task<string> RenderPath(List<IMethodSymbol> path, bool withBodies, string? repoUrl)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"PATH FOUND ({path.Count} nodes):");
+        if (!withBodies)
+        {
+            for (int i = 0; i < path.Count; i++)
+            {
+                var loc = path[i].Locations.FirstOrDefault(l => l.IsInSource);
+                var where = loc != null ? Rel(loc) : "?";
+                var arrow = i < path.Count - 1 ? "  -->" : "";
+                sb.AppendLine($"  {i + 1}. {Sig(path[i])}   {where}{arrow}");
+            }
+            return sb.ToString();
+        }
+
+        for (int i = 0; i < path.Count; i++)
+        {
+            var loc = path[i].Locations.FirstOrDefault(l => l.IsInSource);
+            var where = loc != null ? Rel(loc) : "?";
+            var tag = i == path.Count - 1 ? "  (target)" : "";
+            sb.AppendLine();
+            sb.AppendLine($"**{i + 1}. {Sig(path[i])}**   {RepoLink(where, repoUrl)}{tag}");
+            if (i < path.Count - 1)
+            {
+                sb.AppendLine();
+                sb.AppendLine(await SnippetUpToCall(path[i], path[i + 1], repoUrl));
+                sb.AppendLine($"↓ calls **{Sig(path[i + 1])}**");
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// Telo `caller` od jeho zaciatku po PRVE volanie `callee` (vratane), s line numbers
+    /// orezane na rozumnu dlzku. Plus link na call-site ak je repoUrl.
+    private async Task<string> SnippetUpToCall(IMethodSymbol caller, IMethodSymbol callee, string? repoUrl)
+    {
+        var body = await GetBody(caller);
+        if (body == null || body.Value.node is not BaseMethodDeclarationSyntax decl)
+            return "_(no source available)_";
+        var (model, _) = body.Value;
+
+        InvocationExpressionSyntax? callSite = null;
+        foreach (var inv in decl.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol s &&
+                SymbolEqualityComparer.Default.Equals(s.OriginalDefinition, callee.OriginalDefinition))
+            { callSite = inv; break; }
+        }
+
+        var text = decl.SyntaxTree.GetText();
+        int from = decl.GetLocation().GetLineSpan().StartLinePosition.Line;          // 0-based
+        int to = callSite != null
+            ? callSite.GetLocation().GetLineSpan().StartLinePosition.Line
+            : decl.GetLocation().GetLineSpan().EndLinePosition.Line;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("```csharp");
+        sb.Append(ClipRange(text, from, to, 60));
+        sb.AppendLine("```");
+        if (callSite != null)
+            sb.AppendLine($"_call site: {RepoLink(Rel(callSite.GetLocation()), repoUrl)}_");
+        return sb.ToString();
+    }
+
+    /// Riadky [from..to] (0-based, vratane) zo SourceText, s 1-based cislami, orezane na maxLines.
+    private static string ClipRange(Microsoft.CodeAnalysis.Text.SourceText text, int from, int to, int maxLines)
+    {
+        if (to < from) to = from;
+        to = Math.Min(to, text.Lines.Count - 1);
+        int total = to - from + 1;
+        var sb = new System.Text.StringBuilder();
+        if (total <= maxLines)
+        {
+            for (int ln = from; ln <= to; ln++) sb.AppendLine($"{ln + 1,5}  {text.Lines[ln]}");
+        }
+        else
+        {
+            int head = maxLines - 10;
+            for (int ln = from; ln < from + head; ln++) sb.AppendLine($"{ln + 1,5}  {text.Lines[ln]}");
+            sb.AppendLine($"      // … ({total - maxLines} lines omitted) …");
+            for (int ln = to - 9; ln <= to; ln++) sb.AppendLine($"{ln + 1,5}  {text.Lines[ln]}");
+        }
+        return sb.ToString();
+    }
+
+    /// "relpath:line" -> markdown link na repo (ak je repoUrl), inak plain text.
+    public static string RepoLink(string location, string? repoUrl)
+    {
+        if (string.IsNullOrWhiteSpace(repoUrl)) return location;
+        var i = location.LastIndexOf(':');
+        if (i <= 0) return location;
+        var path = location[..i].Replace('\\', '/');
+        var line = location[(i + 1)..];
+        return $"[{location}]({repoUrl!.TrimEnd('/')}/{path}#L{line})";
     }
 
     /// Strukturovany zoznam metod v subore: (trieda, metoda, riadok).

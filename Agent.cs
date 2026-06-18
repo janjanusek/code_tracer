@@ -11,6 +11,8 @@ public class Agent
     private readonly bool _summarize;
     private readonly bool _useLlm;
     private readonly bool _allPaths;
+    private readonly bool _withBodies;
+    private readonly string? _repoUrl;
     private readonly string? _outPath;
     private readonly int _actionNumPredict;
 
@@ -22,6 +24,7 @@ public class Agent
 
     public Agent(LlmClient llm, RoslynIndex index, int maxSteps = 25,
                  bool summarize = false, bool useLlm = true, bool allPaths = false,
+                 bool withBodies = false, string? repoUrl = null,
                  string? outPath = null, int actionNumPredict = 512)
     {
         _llm = llm;
@@ -30,6 +33,8 @@ public class Agent
         _summarize = summarize;
         _useLlm = useLlm;
         _allPaths = allPaths;
+        _withBodies = withBodies;
+        _repoUrl = repoUrl;
         _outPath = outPath;
         _actionNumPredict = actionNumPredict;
     }
@@ -397,7 +402,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
     {
         foreach (var p in _pairs)
         {
-            var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm);
+            var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm, withBodies: _withBodies, repoUrl: _repoUrl);
             if (res.Contains("PATH FOUND"))
                 return $"(find_path {p.fc}.{p.fm} -> {p.tc}.{p.tm})\n{res}";
         }
@@ -420,7 +425,8 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         int found = 0;
         foreach (var p in _pairs)
         {
-            var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm, maxNodes: 20000);
+            var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm, maxNodes: 20000,
+                                            withBodies: _withBodies, repoUrl: _repoUrl);
             if (!res.Contains("PATH FOUND")) continue;
             if (!seen.Add(res)) continue;       // dedup identicke cesty
             found++;

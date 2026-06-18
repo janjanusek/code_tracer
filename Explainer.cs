@@ -26,15 +26,7 @@ public class Explainer
     }
 
     /// "relpath:line" -> klikatelny markdown link na repo (ak je repoUrl), inak plain text.
-    public static string LinkLoc(string location, string? repoUrl)
-    {
-        if (string.IsNullOrWhiteSpace(repoUrl)) return location;
-        var i = location.LastIndexOf(':');
-        if (i <= 0) return location;
-        var path = location[..i].Replace('\\', '/');
-        var line = location[(i + 1)..];
-        return $"[{location}]({repoUrl!.TrimEnd('/')}/{path}#L{line})";
-    }
+    public static string LinkLoc(string location, string? repoUrl) => RoslynIndex.RepoLink(location, repoUrl);
 
     /// Prvych N riadkov tela (peek). N<=0 => cele telo.
     private static string Peek(string src, int n)

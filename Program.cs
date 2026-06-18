@@ -36,7 +36,8 @@ static async Task<int> RunTrace(Options opts)
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
 
-    var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths, opts.Out);
+    var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths,
+                          opts.WithBodies, opts.RepoUrl, opts.Out);
     await agent.RunAsync(opts.Solution!, opts.TargetFile!, opts.Endpoint!);
     return 0;
 }
@@ -191,6 +192,7 @@ static Options ParseArgs(string[] args)
             case "--peek":                    if (int.TryParse(Next(), out var pk)) o.Peek = pk; break;
             case "--no-llm":                  o.UseLlm = false; break;
             case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
+            case "--with-bodies": case "--code":  o.WithBodies = true; break;
             case "-m": case "--model":        o.Model = Next(); break;
             case "-a": case "--api":          o.Api = Next(); break;
             case "--api-style":               o.ApiStyle = Next().Equals("openai", StringComparison.OrdinalIgnoreCase)
@@ -226,6 +228,10 @@ TRACE options:
   -e, --endpoint      starting point B (route or Class.Method)
       --all-paths     (--brute / --deep) enumerate ALL distinct paths, not just the first.
                       For non-trivial code where one shortest path isn't enough.
+      --with-bodies   (--code) between hops, show each method's code from its start down to
+                      the call to the next hop. With --repo-url, locations become repo links.
+      --repo-url URL  render file locations as clickable links to the repo, e.g.
+                      https://github.com/you/repo/blob/main  (path relative to the .sln dir)
       --no-llm        deterministic only: run find_path over candidate pairs, no model
                       (fastest + fully reliable when the endpoint resolves to a file)
       --max-steps     agent step limit (default 25)
@@ -294,6 +300,7 @@ class Options
     public bool Summary = false;
     public bool UseLlm = true;     // --no-llm: cisto deterministicky find_path, bez modelu
     public bool AllPaths = false;  // --all-paths/--brute: enumeruj VSETKY cesty, nie len prvu
+    public bool WithBodies = false;// --with-bodies/--code: medzi kroky vlozi telo metody po call-site
 
     // explain
     public string? Method;

@@ -182,6 +182,18 @@ PATH FOUND (4 nodes):
 **→ Full example in the repo:** [`examples/trace-agent-to-roslynindex.md`](examples/trace-agent-to-roslynindex.md)
 — all 15 distinct paths, each hop with its `file:line`.
 
+**See the actual code between the hops:** add **`--with-bodies`** (`--code`) and each method's
+source is shown **from its start down to the line where it calls the next hop** — so you read
+the real flow, not just names. With `--repo-url`, every location and call site is a clickable
+link to the file in the repo:
+
+```bash
+dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --no-llm --with-bodies \
+  --repo-url https://github.com/janjanusek/code_tracer/blob/main
+```
+
+**→ Full example:** [`examples/trace-with-bodies.md`](examples/trace-with-bodies.md).
+
 ### Token-level JSON enforcement (why a small model can't "break" the format)
 The model's action selection uses **Ollama structured outputs**: the request carries a
 `format` = flat **JSON schema**, from which Ollama builds a grammar and **masks invalid
@@ -266,9 +278,12 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `-f, --target-file` | trace | — | file of the target class A |
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
 | `--all-paths` / `--brute` | trace | off | enumerate ALL distinct paths, not just the first |
-| `--no-llm` | trace | off | deterministic only — `find_path` over candidate pairs, no model |
+| `--with-bodies` / `--code` | trace | off | insert each method's code (start → call to next hop) between steps |
+| `--no-llm` | trace+explain | off | trace: deterministic only; explain: dump Roslyn context, no model |
 | `--max-steps` | trace | `25` | agent step limit |
 | `--summary` | trace | off | short free-text summary of the path at the end |
+| `--repo-url` | trace+explain | — | render locations as clickable links to the repo |
+| `--peek` | explain | — | in the `--no-llm` dump, show first N lines per method instead of the full body |
 | `-m, --model` | both | `gemma4:latest` | model name |
 | `-a, --api` | both | `http://localhost:11434` | server base URL |
 | `--api-style` | both | `ollama` | `ollama` \| `openai` (LM Studio) |
