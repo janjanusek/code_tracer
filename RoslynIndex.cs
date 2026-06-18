@@ -46,6 +46,10 @@ public class RoslynIndex
     private static string Sig(IMethodSymbol m) =>
         $"{m.ContainingType?.Name}.{m.Name}({string.Join(", ", m.Parameters.Select(p => p.Type.Name))})";
 
+    // Like Sig but includes parameter NAMES: Class.Method(Type name, Type name).
+    private static string SigNamed(IMethodSymbol m) =>
+        $"{m.ContainingType?.Name}.{m.Name}({string.Join(", ", m.Parameters.Select(p => $"{p.Type.Name} {p.Name}"))})";
+
     // ---- symbol resolution -------------------------------------------------
 
     /// Finds all declarations whose name matches (case-insensitive).
@@ -248,7 +252,8 @@ public class RoslynIndex
     /// calls it with the result of find_symbol/outline and then interprets the output.
     /// </summary>
     public async Task<string> FindPath(string fromClass, string fromMethod, string toClass, string toMethod,
-                                       int maxNodes = 3000, bool withBodies = false, string? repoUrl = null)
+                                       int maxNodes = 3000, bool withBodies = false, string? repoUrl = null,
+                                       Func<string, string, string, string, Task<string?>>? annotate = null)
     {
         var start = await ResolveMethod(fromClass, fromMethod);
         var target = await ResolveMethod(toClass, toMethod);
@@ -288,7 +293,7 @@ public class RoslynIndex
                         node = calledBy[node];
                         path.Add(node);
                     }
-                    return await RenderPath(path, withBodies, repoUrl);
+                    return await RenderPath(path, withBodies, repoUrl, annotate);
                 }
                 queue.Enqueue(caller);
             }
@@ -300,7 +305,9 @@ public class RoslynIndex
 
     /// Renders the found path. withBodies=false -> compact list (for the model and default trace).
     /// withBodies=true -> inserts the method body FROM its beginning UP TO the call site of the next step.
-    private async Task<string> RenderPath(List<IMethodSymbol> path, bool withBodies, string? repoUrl)
+    /// annotate (optional) -> per-hop callback (LLM) returning a short "why" note, or null to omit it.
+    private async Task<string> RenderPath(List<IMethodSymbol> path, bool withBodies, string? repoUrl,
+                                          Func<string, string, string, string, Task<string?>>? annotate)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"PATH FOUND ({path.Count} nodes):");
@@ -308,13 +315,18 @@ public class RoslynIndex
         {
             for (int i = 0; i < path.Count; i++)
             {
-                var loc = path[i].Locations.FirstOrDefault(l => l.IsInSource);
-                var where = loc != null ? Rel(loc) : "?";
+                var loc0 = path[i].Locations.FirstOrDefault(l => l.IsInSource);
+                var where0 = loc0 != null ? Rel(loc0) : "?";
                 var arrow = i < path.Count - 1 ? "  -->" : "";
-                sb.AppendLine($"  {i + 1}. {Sig(path[i])}   {where}{arrow}");
+                sb.AppendLine($"  {i + 1}. {Sig(path[i])}   {where0}{arrow}");
             }
             return sb.ToString();
         }
+
+        // Overview of the whole chain + a running trail of prior steps/notes, so the annotator
+        // understands the depth and where the current hop sits.
+        var pathOverview = "Full call chain: " + string.Join("  →  ", path.Select(Sig));
+        var trail = new System.Text.StringBuilder();
 
         for (int i = 0; i < path.Count; i++)
         {
@@ -322,24 +334,39 @@ public class RoslynIndex
             var where = loc != null ? Rel(loc) : "?";
             var tag = i == path.Count - 1 ? "  (target)" : "";
             sb.AppendLine();
-            sb.AppendLine($"**{i + 1}. {Sig(path[i])}**   {RepoLink(where, repoUrl)}{tag}");
+            sb.AppendLine($"**{i + 1}. {SigNamed(path[i])}**   {RepoLink(where, repoUrl)}{tag}");
             if (i < path.Count - 1)
             {
+                var (rendered, rawCode) = await SnippetUpToCall(path[i], path[i + 1], repoUrl);
+                if (annotate != null)
+                {
+                    var context = pathOverview + (trail.Length > 0 ? "\nSteps so far:\n" + trail : "");
+                    var note = await annotate(context, SigNamed(path[i]), SigNamed(path[i + 1]), rawCode);
+                    if (!string.IsNullOrWhiteSpace(note))
+                    {
+                        sb.AppendLine($"> _{note!.Trim()}_");
+                        trail.AppendLine($"  {i + 1}. {Sig(path[i])} → {Sig(path[i + 1])}: {note.Trim()}");
+                    }
+                    else
+                        trail.AppendLine($"  {i + 1}. {Sig(path[i])} → {Sig(path[i + 1])}");
+                }
                 sb.AppendLine();
-                sb.AppendLine(await SnippetUpToCall(path[i], path[i + 1], repoUrl));
-                sb.AppendLine($"↓ calls **{Sig(path[i + 1])}**");
+                sb.AppendLine(rendered);
+                sb.AppendLine($"↓ calls **{SigNamed(path[i + 1])}**");
             }
         }
         return sb.ToString();
     }
 
-    /// Body of `caller` from its beginning to the FIRST call to `callee` (inclusive), with line numbers
-    /// clipped to a reasonable length. Plus a link to the call site if repoUrl is provided.
-    private async Task<string> SnippetUpToCall(IMethodSymbol caller, IMethodSymbol callee, string? repoUrl)
+    /// Body of `caller` from its beginning to the FIRST call to `callee` (inclusive). Returns the
+    /// rendered markdown (fenced, line-numbered, clipped, with a call-site link + arg mapping) AND the
+    /// raw code (no line numbers) used as context for the optional LLM annotation.
+    private async Task<(string rendered, string rawCode)> SnippetUpToCall(
+        IMethodSymbol caller, IMethodSymbol callee, string? repoUrl)
     {
         var body = await GetBody(caller);
         if (body == null || body.Value.node is not BaseMethodDeclarationSyntax decl)
-            return "_(no source available)_";
+            return ("_(no source available)_", "");
         var (model, _) = body.Value;
 
         InvocationExpressionSyntax? callSite = null;
@@ -361,7 +388,39 @@ public class RoslynIndex
         sb.Append(ClipRange(text, from, to, 60));
         sb.AppendLine("```");
         if (callSite != null)
-            sb.AppendLine($"_call site: {RepoLink(Rel(callSite.GetLocation()), repoUrl)}_");
+        {
+            var cs = $"_call site: {RepoLink(Rel(callSite.GetLocation()), repoUrl)}";
+            var argMap = ArgMapping(callSite, callee);
+            if (argMap.Length > 0) cs += $"  ·  args: {argMap}";
+            sb.AppendLine(cs + "_");
+        }
+        return (sb.ToString(), RawRange(text, from, to, 80));
+    }
+
+    /// Positional "argExpr → paramName" mapping for a call site (best-effort, truncated).
+    private static string ArgMapping(InvocationExpressionSyntax inv, IMethodSymbol callee)
+    {
+        var args = inv.ArgumentList.Arguments;
+        var ps = callee.Parameters;
+        var parts = new List<string>();
+        for (int i = 0; i < args.Count && i < ps.Length; i++)
+        {
+            var a = args[i].Expression.ToString().Replace('\n', ' ').Trim();
+            if (a.Length > 28) a = a[..28] + "…";
+            parts.Add($"{a} → {ps[i].Name}");
+        }
+        return string.Join(", ", parts);
+    }
+
+    /// Raw source [from..to] (0-based, inclusive), no line numbers, clipped to the LAST maxLines
+    /// (keeps the tail, i.e. the call site) - context for the LLM annotation prompt.
+    private static string RawRange(Microsoft.CodeAnalysis.Text.SourceText text, int from, int to, int maxLines)
+    {
+        if (to < from) to = from;
+        to = Math.Min(to, text.Lines.Count - 1);
+        if (to - from + 1 > maxLines) from = to - maxLines + 1;
+        var sb = new System.Text.StringBuilder();
+        for (int ln = Math.Max(0, from); ln <= to; ln++) sb.AppendLine(text.Lines[ln].ToString());
         return sb.ToString();
     }
 

@@ -1,36 +1,26 @@
-# Trace example with code (`--with-bodies`)
+# Trace example with code + LLM notes (`--with-bodies --annotate`)
 
-The same trace, but between each hop CodeTracer inserts the method's code **from its start
-down to the exact line where it calls the next hop** — so you read the actual flow, not just
-method names. Signatures show **parameter names**, and each call site shows the **argument →
-parameter** mapping. With `--repo-url` every location and call site is a clickable link.
-Deterministic, **zero model calls**. Reproducible:
+The same code-walk as [`trace-with-bodies.md`](trace-with-bodies.md), but `--annotate` adds a
+short LLM **"why" note** per hop (the `> _…_` lines) explaining what that step achieves in the
+overall chain. The model sees the prior steps, so the notes are depth-aware; trivial hops get
+no note (just the self-describing code). Signatures show **parameter names**, and each call
+site shows the **argument → parameter** mapping. Reproducible (needs the model running):
 
 ```bash
-dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --no-llm --with-bodies \
+dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --no-llm --annotate \
   --repo-url https://github.com/janjanusek/code_tracer/blob/main
 ```
-
-> Tip: add `--annotate` to get a short LLM "why" note per hop — see
-> [`trace-with-bodies-annotated.md`](trace-with-bodies-annotated.md).
 
 PATH FOUND (4 nodes):
 
 **1. Agent.RunAsync(String solutionPath, String targetFile, String endpoint)**   [Agent.cs:118](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L118)
+> _Executes model-requested external tool call and processes observation_
 
 ```csharp
   118      public async Task RunAsync(string solutionPath, string targetFile, string endpoint)
   119      {
   120          var seed = Bootstrap(targetFile, endpoint);
-  121
-  122          // Deterministic pre-flight: try candidate find_path pairs IMMEDIATELY. On CPU this is
-  123          // faster and more reliable than waiting for (often under-filled) model calls. Roslyn
-  124          // is the source of truth; the model is here only to navigate harder cases (interface/DI/events).
-  125          // --all-paths/--brute: enumerate ALL paths (deep), not just the first shortest one.
-  126          var mode = _allPaths ? "brute-force (all paths)" : "first path";
-  127          Console.WriteLine($"[pre-flight] deterministic find_path over {_pairs.Count} candidate pairs [{mode}]...");
-  128          var deterministic = _allPaths ? await TryAllPaths() : await TryAutoPath();
-      // … (some lines omitted) …
+  ...
   195              string observation;
   196              try { observation = await Dispatch(tool, args); }
 ```
@@ -39,6 +29,7 @@ _call site: [Agent.cs:196](https://github.com/janjanusek/code_tracer/blob/main/A
 ↓ calls **Agent.Dispatch(String tool, JsonElement a)**
 
 **2. Agent.Dispatch(String tool, JsonElement a)**   [Agent.cs:488](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L488)
+> _Extracts symbol name from JSON and queries the Roslyn index for type information_
 
 ```csharp
   488      private async Task<string> Dispatch(string tool, JsonElement a)
@@ -56,6 +47,7 @@ _call site: [Agent.cs:496](https://github.com/janjanusek/code_tracer/blob/main/A
 ↓ calls **RoslynIndex.FindSymbol(String name)**
 
 **3. RoslynIndex.FindSymbol(String name)**   [RoslynIndex.cs:130](https://github.com/janjanusek/code_tracer/blob/main/RoslynIndex.cs#L130)
+> _Converts location object into a readable source code snippet for output_
 
 ```csharp
   130      public async Task<string> FindSymbol(string name)

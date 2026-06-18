@@ -12,6 +12,7 @@ public class Agent
     private readonly bool _useLlm;
     private readonly bool _allPaths;
     private readonly bool _withBodies;
+    private readonly bool _annotate;
     private readonly string? _repoUrl;
     private readonly string? _outPath;
     private readonly int _actionNumPredict;
@@ -24,7 +25,7 @@ public class Agent
 
     public Agent(LlmClient llm, RoslynIndex index, int maxSteps = 25,
                  bool summarize = false, bool useLlm = true, bool allPaths = false,
-                 bool withBodies = false, string? repoUrl = null,
+                 bool withBodies = false, bool annotate = false, string? repoUrl = null,
                  string? outPath = null, int actionNumPredict = 512)
     {
         _llm = llm;
@@ -34,6 +35,7 @@ public class Agent
         _useLlm = useLlm;
         _allPaths = allPaths;
         _withBodies = withBodies;
+        _annotate = annotate;
         _repoUrl = repoUrl;
         _outPath = outPath;
         _actionNumPredict = actionNumPredict;
@@ -400,9 +402,11 @@ fall back to find_callers from the target going UP one hop at a time, then finis
     /// Deterministically iterates all candidate pairs and returns the first path found.
     private async Task<string> TryAutoPath()
     {
+        var ann = Annotator();
         foreach (var p in _pairs)
         {
-            var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm, withBodies: _withBodies, repoUrl: _repoUrl);
+            var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm,
+                                            withBodies: _withBodies, repoUrl: _repoUrl, annotate: ann);
             if (res.Contains("PATH FOUND"))
                 return $"(find_path {p.fc}.{p.fm} -> {p.tc}.{p.tm})\n{res}";
         }
@@ -422,11 +426,12 @@ fall back to find_callers from the target going UP one hop at a time, then finis
     {
         var sb = new StringBuilder();
         var seen = new HashSet<string>();
+        var ann = Annotator();
         int found = 0;
         foreach (var p in _pairs)
         {
             var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm, maxNodes: 20000,
-                                            withBodies: _withBodies, repoUrl: _repoUrl);
+                                            withBodies: _withBodies, repoUrl: _repoUrl, annotate: ann);
             if (!res.Contains("PATH FOUND")) continue;
             if (!seen.Add(res)) continue;       // dedup identical paths
             found++;
@@ -446,6 +451,36 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             return fb.ToString();
         }
         return $"FOUND {found} distinct path(s) [brute-force]:\n\n" + sb.ToString();
+    }
+
+    /// Builds the per-hop annotator (or null if --annotate is off). The callback gets the prior
+    /// context (the whole chain + earlier steps/notes, so it understands the depth), the caller and
+    /// callee signatures (with param names) and the caller's code up to the call. It returns a very
+    /// short "why" note, or null when the step is trivial (then only the self-describing code shows).
+    private Func<string, string, string, string, Task<string?>>? Annotator()
+    {
+        if (!_annotate) return null;
+        return async (context, callerSig, calleeSig, code) =>
+        {
+            try
+            {
+                var prompt =
+                    $"{context}\n\n" +
+                    $"Current step: `{callerSig}` runs and, at the end of the snippet below, calls `{calleeSig}`.\n\n" +
+                    $"```csharp\n{code}\n```\n\n" +
+                    $"In ONE short phrase (max ~14 words) say WHY it calls `{calleeSig}` here / what this step " +
+                    "achieves in the overall chain. Be proportional to the context. If it is a trivial or obvious " +
+                    "delegation with nothing meaningful to add, reply with exactly: null";
+                var reply = (await _llm.ChatAsync(new[]
+                {
+                    new ChatMsg("system", "You annotate one step of a code call-chain in a single terse phrase. No markdown, no quotes."),
+                    new ChatMsg("user", prompt)
+                }, new ChatOptions { Temperature = 0.2, NumPredict = 64 })).Trim();
+                if (reply.Length == 0 || reply.Equals("null", StringComparison.OrdinalIgnoreCase)) return null;
+                return reply.Trim('"', '`', ' ', '.');
+            }
+            catch { return null; }   // model down / error -> just omit the annotation
+        };
     }
 
     // ---- dispatch ----------------------------------------------------------

@@ -184,15 +184,19 @@ PATH FOUND (4 nodes):
 
 **See the actual code between the hops:** add **`--with-bodies`** (`--code`) and each method's
 source is shown **from its start down to the line where it calls the next hop** — so you read
-the real flow, not just names. With `--repo-url`, every location and call site is a clickable
-link to the file in the repo:
+the real flow, not just names. Signatures include **parameter names** and each call site shows
+the **argument → parameter** mapping. With `--repo-url`, every location and call site is a
+clickable link to the file in the repo:
 
 ```bash
 dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --no-llm --with-bodies \
   --repo-url https://github.com/janjanusek/code_tracer/blob/main
 ```
 
-**→ Full example:** [`examples/trace-with-bodies.md`](examples/trace-with-bodies.md).
+Add **`--annotate`** (`--why`) for a short LLM **"why" note per hop** — it sees the prior steps
+(so the notes are depth-aware) and stays silent on trivial hops. **→ Examples:**
+[`trace-with-bodies.md`](examples/trace-with-bodies.md) ·
+[`trace-with-bodies-annotated.md`](examples/trace-with-bodies-annotated.md).
 
 ### Token-level JSON enforcement (why a small model can't "break" the format)
 The model's action selection uses **Ollama structured outputs**: the request carries a
@@ -278,7 +282,8 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `-f, --target-file` | trace | — | file of the target class A |
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
 | `--all-paths` / `--brute` | trace | off | enumerate ALL distinct paths, not just the first |
-| `--with-bodies` / `--code` | trace | off | insert each method's code (start → call to next hop) between steps |
+| `--with-bodies` / `--code` | trace | off | insert each method's code (start → call to next hop) between steps; show param names + arg→param mapping |
+| `--annotate` / `--why` | trace | off | short LLM "why" note per hop (depth-aware); implies `--with-bodies` |
 | `--no-llm` | trace+explain | off | trace: deterministic only; explain: dump Roslyn context, no model |
 | `--max-steps` | trace | `25` | agent step limit |
 | `--summary` | trace | off | short free-text summary of the path at the end |

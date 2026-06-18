@@ -37,7 +37,7 @@ static async Task<int> RunTrace(Options opts)
     await ReportVersion(llm);
 
     var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths,
-                          opts.WithBodies, opts.RepoUrl, opts.Out);
+                          opts.WithBodies || opts.Annotate, opts.Annotate, opts.RepoUrl, opts.Out);
     await agent.RunAsync(opts.Solution!, opts.TargetFile!, opts.Endpoint!);
     return 0;
 }
@@ -193,6 +193,7 @@ static Options ParseArgs(string[] args)
             case "--no-llm":                  o.UseLlm = false; break;
             case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
             case "--with-bodies": case "--code":  o.WithBodies = true; break;
+            case "--annotate": case "--why":      o.Annotate = true; break;
             case "-m": case "--model":        o.Model = Next(); break;
             case "-a": case "--api":          o.Api = Next(); break;
             case "--api-style":               o.ApiStyle = Next().Equals("openai", StringComparison.OrdinalIgnoreCase)
@@ -230,6 +231,9 @@ TRACE options:
                       For non-trivial code where one shortest path isn't enough.
       --with-bodies   (--code) between hops, show each method's code from its start down to
                       the call to the next hop. With --repo-url, locations become repo links.
+      --annotate      (--why) add a short LLM note per hop explaining WHY it calls the next
+                      method (or nothing if trivial). Sees the prior chain for depth. Implies
+                      --with-bodies; needs the model (gemma4) reachable.
       --repo-url URL  render file locations as clickable links to the repo, e.g.
                       https://github.com/you/repo/blob/main  (path relative to the .sln dir)
       --no-llm        deterministic only: run find_path over candidate pairs, no model
@@ -301,6 +305,7 @@ class Options
     public bool UseLlm = true;     // --no-llm: purely deterministic find_path, no model
     public bool AllPaths = false;  // --all-paths/--brute: enumerate ALL paths, not just the first
     public bool WithBodies = false;// --with-bodies/--code: between hops inserts the method body up to the call site
+    public bool Annotate = false;  // --annotate/--why: short LLM "why" note per hop (implies --with-bodies)
 
     // explain
     public string? Method;
