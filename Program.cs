@@ -239,7 +239,8 @@ TRACE options:
       --no-llm        deterministic only: run find_path over candidate pairs, no model
                       (fastest + fully reliable when the endpoint resolves to a file)
       --max-steps     agent step limit (default 25)
-      --summary       append a short free-text summary of the path at the end
+      --summary       append an LLM SUMMARY section at the end (purpose, dependencies,
+                      "good to know") - included in the output / saved file. Needs the model.
       --out           save the result (the path / all paths) to a file
 
 EXPLAIN options:

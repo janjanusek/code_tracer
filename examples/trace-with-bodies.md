@@ -2,17 +2,18 @@
 
 The same trace, but between each hop CodeTracer inserts the method's code **from its start
 down to the exact line where it calls the next hop** — so you read the actual flow, not just
-method names. Signatures show **parameter names**, and each call site shows the **argument →
-parameter** mapping. With `--repo-url` every location and call site is a clickable link.
-Deterministic, **zero model calls**. Reproducible:
+method names. Signatures show **parameter names**, each call site shows the **argument →
+parameter** mapping, and the **target** node shows its full body (where the chain ends). With
+`--repo-url` every location and call site is a clickable link. Deterministic, **zero model
+calls**. Reproducible:
 
 ```bash
 dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --no-llm --with-bodies \
   --repo-url https://github.com/janjanusek/code_tracer/blob/main
 ```
 
-> Tip: add `--annotate` to get a short LLM "why" note per hop — see
-> [`trace-with-bodies-annotated.md`](trace-with-bodies-annotated.md).
+> Tip: add `--annotate` for a short LLM "why" note per hop, and `--summary` for a final
+> summary section — see [`trace-with-bodies-annotated.md`](trace-with-bodies-annotated.md).
 
 PATH FOUND (4 nodes):
 
@@ -22,15 +23,7 @@ PATH FOUND (4 nodes):
   118      public async Task RunAsync(string solutionPath, string targetFile, string endpoint)
   119      {
   120          var seed = Bootstrap(targetFile, endpoint);
-  121
-  122          // Deterministic pre-flight: try candidate find_path pairs IMMEDIATELY. On CPU this is
-  123          // faster and more reliable than waiting for (often under-filled) model calls. Roslyn
-  124          // is the source of truth; the model is here only to navigate harder cases (interface/DI/events).
-  125          // --all-paths/--brute: enumerate ALL paths (deep), not just the first shortest one.
-  126          var mode = _allPaths ? "brute-force (all paths)" : "first path";
-  127          Console.WriteLine($"[pre-flight] deterministic find_path over {_pairs.Count} candidate pairs [{mode}]...");
-  128          var deterministic = _allPaths ? await TryAllPaths() : await TryAutoPath();
-      // … (some lines omitted) …
+  ...
   195              string observation;
   196              try { observation = await Dispatch(tool, args); }
 ```
@@ -38,20 +31,20 @@ _call site: [Agent.cs:196](https://github.com/janjanusek/code_tracer/blob/main/A
 
 ↓ calls **Agent.Dispatch(String tool, JsonElement a)**
 
-**2. Agent.Dispatch(String tool, JsonElement a)**   [Agent.cs:488](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L488)
+**2. Agent.Dispatch(String tool, JsonElement a)**   [Agent.cs:494](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L494)
 
 ```csharp
-  488      private async Task<string> Dispatch(string tool, JsonElement a)
-  489      {
-  490          string S(string k) => a.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String
-  491              ? (v.GetString() ?? "") : "";
-  492          int I(string k, int def) => a.TryGetProperty(k, out var v) && v.TryGetInt32(out var n) ? n : def;
-  493
-  494          return tool switch
-  495          {
-  496              "find_symbol"     => await _index.FindSymbol(S("name")),
+  494      private async Task<string> Dispatch(string tool, JsonElement a)
+  495      {
+  496          string S(string k) => a.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String
+  497              ? (v.GetString() ?? "") : "";
+  498          int I(string k, int def) => a.TryGetProperty(k, out var v) && v.TryGetInt32(out var n) ? n : def;
+  499
+  500          return tool switch
+  501          {
+  502              "find_symbol"     => await _index.FindSymbol(S("name")),
 ```
-_call site: [Agent.cs:496](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L496)  ·  args: S("name") → name_
+_call site: [Agent.cs:502](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L502)  ·  args: S("name") → name_
 
 ↓ calls **RoslynIndex.FindSymbol(String name)**
 
@@ -73,3 +66,13 @@ _call site: [RoslynIndex.cs:138](https://github.com/janjanusek/code_tracer/blob/
 ↓ calls **RoslynIndex.Rel(Location loc)**
 
 **4. RoslynIndex.Rel(Location loc)**   [RoslynIndex.cs:38](https://github.com/janjanusek/code_tracer/blob/main/RoslynIndex.cs#L38)  (target)
+
+```csharp
+   38      private string Rel(Location loc)
+   39      {
+   40          var span = loc.GetLineSpan();
+   41          var path = span.Path;
+   42          try { path = Path.GetRelativePath(SolutionDir, path); } catch { /* keep absolute */ }
+   43          return $"{path}:{span.StartLinePosition.Line + 1}";
+   44      }
+```

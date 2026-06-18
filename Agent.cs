@@ -302,40 +302,55 @@ fall back to find_callers from the target going UP one hop at a time, then finis
 
     // ---- finalization -------------------------------------------------------
 
-    /// Prints the final path (assembled deterministically) and an optional unconstrained summary.
+    /// Prints the final path (assembled deterministically) and, when --summary is on, an LLM
+    /// summary section (purpose, dependencies, good-to-know) included in BOTH console and --out.
     private async Task Finish(string pathText, string reason)
     {
+        var output = pathText.Trim();
+        if (_summarize && output.Contains("PATH FOUND"))
+        {
+            Console.Error.WriteLine("[summary] summarizing the chain...");
+            var summary = await SummarizeChain(pathText);
+            if (!string.IsNullOrWhiteSpace(summary))
+                output += "\n\n## Summary\n" + summary.Trim();
+        }
+
         Console.WriteLine($"\n========== DONE ({reason}) ==========");
-        Console.WriteLine(pathText.Trim());
+        Console.WriteLine(output);
 
         if (!string.IsNullOrWhiteSpace(_outPath))
         {
             try
             {
-                await File.WriteAllTextAsync(_outPath!, pathText.Trim() + "\n");
+                await File.WriteAllTextAsync(_outPath!, output + "\n");
                 Console.Error.WriteLine($"[trace] saved to {_outPath}");
             }
             catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
         }
+    }
 
-        if (!_summarize) return;
-
-        // Free-text summary as a separate UNCONSTRAINED call (without format).
+    /// A final SUMMARY of the whole chain: what it does, its dependencies, and "good to know"
+    /// (important / non-obvious things the user did not ask about). One unconstrained call.
+    private async Task<string> SummarizeChain(string pathText)
+    {
         try
         {
-            var summary = await _llm.ChatAsync(new[]
+            var prompt =
+                "Below is a traced call chain (with code) from a large C# system.\n\n" +
+                pathText + "\n\n" +
+                "Write a brief SUMMARY for a developer seeing this for the first time:\n" +
+                "1. **What it does / purpose** - what this chain achieves, factually.\n" +
+                "2. **Dependencies** - the key services, types or external calls it relies on.\n" +
+                "3. **Good to know** - anything important or non-obvious they did NOT ask about " +
+                "(side effects, assumptions, edge cases, gotchas).\n" +
+                "Be concise and concrete; short paragraphs or bullets.";
+            return (await _llm.ChatAsync(new[]
             {
-                new ChatMsg("system", "You are a senior C# developer. Summarize the discovered call chain in 2-3 plain-English sentences."),
-                new ChatMsg("user", "Discovered path:\n" + pathText)
-            }, new ChatOptions { Temperature = 0.2, NumPredict = 256 });
-
-            if (!string.IsNullOrWhiteSpace(summary))
-            {
-                Console.WriteLine("\n--- SUMMARY ---");
-                Console.WriteLine(summary.Trim());
-            }
+                new ChatMsg("system", "You summarize a code call-chain for a developer. Concise, factual, plain English."),
+                new ChatMsg("user", prompt)
+            }, new ChatOptions { Temperature = 0.2, NumPredict = 2048 })).Trim();
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[summary failed] {ex.Message}"); }
+        catch (Exception ex) { return $"_(summary unavailable: {ex.Message})_"; }
     }
 
     // ---- deterministic bootstrap -----------------------------------------
@@ -464,13 +479,19 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         {
             try
             {
-                var prompt =
-                    $"{context}\n\n" +
-                    $"Current step: `{callerSig}` runs and, at the end of the snippet below, calls `{calleeSig}`.\n\n" +
-                    $"```csharp\n{code}\n```\n\n" +
-                    $"In ONE short phrase (max ~14 words) say WHY it calls `{calleeSig}` here / what this step " +
-                    "achieves in the overall chain. Be proportional to the context. If it is a trivial or obvious " +
-                    "delegation with nothing meaningful to add, reply with exactly: null";
+                // Empty calleeSig => this is the target/destination node (end of the chain).
+                var prompt = string.IsNullOrEmpty(calleeSig)
+                    ? $"{context}\n\n" +
+                      $"This is the FINAL method of the chain: `{callerSig}`.\n\n" +
+                      $"```csharp\n{code}\n```\n\n" +
+                      "In ONE short phrase (max ~14 words) say what this final method does / why the chain " +
+                      "ends here. If trivial, reply with exactly: null"
+                    : $"{context}\n\n" +
+                      $"Current step: `{callerSig}` runs and, at the end of the snippet below, calls `{calleeSig}`.\n\n" +
+                      $"```csharp\n{code}\n```\n\n" +
+                      $"In ONE short phrase (max ~14 words) say WHY it calls `{calleeSig}` here / what this step " +
+                      "achieves in the overall chain. Be proportional to the context. If it is a trivial or obvious " +
+                      "delegation with nothing meaningful to add, reply with exactly: null";
                 var reply = (await _llm.ChatAsync(new[]
                 {
                     new ChatMsg("system", "You annotate one step of a code call-chain in a single terse phrase. No markdown, no quotes."),

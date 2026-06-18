@@ -332,28 +332,36 @@ public class RoslynIndex
         {
             var loc = path[i].Locations.FirstOrDefault(l => l.IsInSource);
             var where = loc != null ? Rel(loc) : "?";
-            var tag = i == path.Count - 1 ? "  (target)" : "";
+            bool isTarget = i == path.Count - 1;
+            var tag = isTarget ? "  (target)" : "";
             sb.AppendLine();
             sb.AppendLine($"**{i + 1}. {SigNamed(path[i])}**   {RepoLink(where, repoUrl)}{tag}");
-            if (i < path.Count - 1)
+
+            // Non-target nodes: body up to the call of the next hop. Target node: its FULL body
+            // (the destination - where the chain ends), so the reader gets the full picture.
+            var calleeSig = isTarget ? "" : SigNamed(path[i + 1]);
+            var (rendered, rawCode) = isTarget
+                ? await MethodBodyWithRaw(path[i], repoUrl)
+                : await SnippetUpToCall(path[i], path[i + 1], repoUrl);
+
+            if (annotate != null)
             {
-                var (rendered, rawCode) = await SnippetUpToCall(path[i], path[i + 1], repoUrl);
-                if (annotate != null)
+                var context = pathOverview + (trail.Length > 0 ? "\nSteps so far:\n" + trail : "");
+                var note = await annotate(context, SigNamed(path[i]), calleeSig, rawCode);
+                if (!string.IsNullOrWhiteSpace(note))
                 {
-                    var context = pathOverview + (trail.Length > 0 ? "\nSteps so far:\n" + trail : "");
-                    var note = await annotate(context, SigNamed(path[i]), SigNamed(path[i + 1]), rawCode);
-                    if (!string.IsNullOrWhiteSpace(note))
-                    {
-                        sb.AppendLine($"> _{note!.Trim()}_");
-                        trail.AppendLine($"  {i + 1}. {Sig(path[i])} → {Sig(path[i + 1])}: {note.Trim()}");
-                    }
-                    else
-                        trail.AppendLine($"  {i + 1}. {Sig(path[i])} → {Sig(path[i + 1])}");
+                    sb.AppendLine($"> _{note!.Trim()}_");
+                    trail.AppendLine(isTarget
+                        ? $"  {i + 1}. {Sig(path[i])} (target): {note.Trim()}"
+                        : $"  {i + 1}. {Sig(path[i])} → {Sig(path[i + 1])}: {note.Trim()}");
                 }
-                sb.AppendLine();
-                sb.AppendLine(rendered);
-                sb.AppendLine($"↓ calls **{SigNamed(path[i + 1])}**");
+                else if (!isTarget)
+                    trail.AppendLine($"  {i + 1}. {Sig(path[i])} → {Sig(path[i + 1])}");
             }
+            sb.AppendLine();
+            sb.AppendLine(rendered);
+            if (!isTarget)
+                sb.AppendLine($"↓ calls **{SigNamed(path[i + 1])}**");
         }
         return sb.ToString();
     }
@@ -394,6 +402,22 @@ public class RoslynIndex
             if (argMap.Length > 0) cs += $"  ·  args: {argMap}";
             sb.AppendLine(cs + "_");
         }
+        return (sb.ToString(), RawRange(text, from, to, 80));
+    }
+
+    /// Full body of a method (e.g. the target/destination node), rendered + raw (for annotation).
+    private async Task<(string rendered, string rawCode)> MethodBodyWithRaw(IMethodSymbol m, string? repoUrl)
+    {
+        var body = await GetBody(m);
+        if (body == null || body.Value.node is not BaseMethodDeclarationSyntax decl)
+            return ("_(no source available)_", "");
+        var text = decl.SyntaxTree.GetText();
+        int from = decl.GetLocation().GetLineSpan().StartLinePosition.Line;
+        int to = decl.GetLocation().GetLineSpan().EndLinePosition.Line;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("```csharp");
+        sb.Append(ClipRange(text, from, to, 60));
+        sb.AppendLine("```");
         return (sb.ToString(), RawRange(text, from, to, 80));
     }
 

@@ -194,7 +194,8 @@ dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --no-llm --w
 ```
 
 Add **`--annotate`** (`--why`) for a short LLM **"why" note per hop** — it sees the prior steps
-(so the notes are depth-aware) and stays silent on trivial hops. **→ Examples:**
+(so the notes are depth-aware) and stays silent on trivial hops. Add **`--summary`** for a final
+**Summary** section (purpose, dependencies, good-to-know) included in the saved file. **→ Examples:**
 [`trace-with-bodies.md`](examples/trace-with-bodies.md) ·
 [`trace-with-bodies-annotated.md`](examples/trace-with-bodies-annotated.md).
 
@@ -286,7 +287,7 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--annotate` / `--why` | trace | off | short LLM "why" note per hop (depth-aware); implies `--with-bodies` |
 | `--no-llm` | trace+explain | off | trace: deterministic only; explain: dump Roslyn context, no model |
 | `--max-steps` | trace | `25` | agent step limit |
-| `--summary` | trace | off | short free-text summary of the path at the end |
+| `--summary` | trace | off | LLM summary section at the end (purpose, dependencies, good-to-know); in the saved file |
 | `--repo-url` | trace+explain | — | render locations as clickable links to the repo |
 | `--peek` | explain | — | in the `--no-llm` dump, show first N lines per method instead of the full body |
 | `-m, --model` | both | `gemma4:latest` | model name |
