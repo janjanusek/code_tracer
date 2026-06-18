@@ -6,44 +6,44 @@ namespace CodeTracer;
 
 public record ChatMsg(string Role, string Content);
 
-/// <summary>Ktoru API rodinu pouzit na chat volania.</summary>
+/// <summary>Which API family to use for chat calls.</summary>
 public enum ApiStyle
 {
-    /// Natívny Ollama endpoint /api/chat - podporuje `format` (JSON schema objekt)
-    /// aj `options` (num_ctx, num_predict, repeat_penalty). Default.
+    /// Native Ollama endpoint /api/chat - supports `format` (JSON schema object)
+    /// and `options` (num_ctx, num_predict, repeat_penalty). Default.
     Ollama,
-    /// OpenAI-kompatibilný /v1/chat/completions (napr. LM Studio). Structured output
-    /// ide cez `response_format` = json_schema; `num_ctx` sa tu nedá nastaviť.
+    /// OpenAI-compatible /v1/chat/completions (e.g. LM Studio). Structured output
+    /// goes via `response_format` = json_schema; `num_ctx` cannot be set here.
     OpenAI
 }
 
-/// <summary>Per-volanie nastavenia. Defaulty su CPU-friendly a deterministicke.</summary>
+/// <summary>Per-call settings. Defaults are CPU-friendly and deterministic.</summary>
 public sealed class ChatOptions
 {
-    /// 0 = greedy/deterministicke. Pre rozhodovanie a štruktúru drž 0.
+    /// 0 = greedy/deterministic. Keep at 0 for decision-making and structured output.
     public double Temperature { get; init; } = 0.0;
-    /// Veľkosť kontextu. null => použije sa default klienta (--num-ctx).
+    /// Context window size. null => the client default is used (--num-ctx).
     public int? NumCtx { get; init; }
-    /// Strop na počet vygenerovaných tokenov (Ollama num_predict / OpenAI max_tokens).
+    /// Cap on the number of generated tokens (Ollama num_predict / OpenAI max_tokens).
     public int? NumPredict { get; init; }
-    /// Penalizácia opakovania - mierne tlmí repetition-loop u malých modelov.
+    /// Repetition penalty - gently suppresses repetition loops in smaller models.
     public double RepeatPenalty { get; init; } = 1.1;
-    /// JSON schema (ako JsonElement). Keď je zadaná, výstup je gramaticky vynútený
-    /// na štrukturálne platný JSON. null => neobmedzený text.
+    /// JSON schema (as a JsonElement). When provided, the output is grammar-constrained
+    /// to structurally valid JSON. null => unconstrained text.
     public JsonElement? Format { get; init; }
 }
 
 /// <summary>
-/// Klient na lokálny LLM server. Default je natívne Ollama /api/chat, ktoré
-/// podporuje token-level structured outputs (`format` = JSON schema) - server
-/// z nej vyrobí gramatiku a počas samplingu maskuje nevalidné tokeny, takže
-/// výstup je garantovane platný JSON. OpenAI-kompatibilný režim (LM Studio)
-/// rieši to isté cez `response_format`.
+/// Client for a local LLM server. Default is the native Ollama /api/chat, which
+/// supports token-level structured outputs (`format` = JSON schema) - the server
+/// builds a grammar from it and masks invalid tokens during sampling, so the
+/// output is guaranteed to be valid JSON. OpenAI-compatible mode (LM Studio)
+/// achieves the same via `response_format`.
 /// </summary>
 public class LlmClient
 {
     private readonly HttpClient _http;
-    private readonly string _root;       // napr. http://localhost:11434  (bez /v1, bez trailing /)
+    private readonly string _root;       // e.g. http://localhost:11434  (no /v1, no trailing /)
     private readonly string _model;
     private readonly ApiStyle _style;
     private readonly int _defaultNumCtx;
@@ -60,7 +60,7 @@ public class LlmClient
     public ApiStyle Style => _style;
     public string Model => _model;
 
-    /// Zoberie čokoľvek (http://host:port, .../v1, s/bez trailing slash) a vráti čistý root.
+    /// Accepts anything (http://host:port, .../v1, with/without trailing slash) and returns a clean root.
     private static string NormalizeRoot(string api)
     {
         var r = api.Trim().TrimEnd('/');
@@ -89,8 +89,8 @@ public class LlmClient
 
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
-        // Ollama natívne: { "message": { "content": "..." } }
-        // OpenAI:         { "choices": [ { "message": { "content": "..." } } ] }
+        // Ollama native: { "message": { "content": "..." } }
+        // OpenAI:        { "choices": [ { "message": { "content": "..." } } ] }
         string? content = _style == ApiStyle.Ollama
             ? root.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var c1) ? c1.GetString() : null
             : root.TryGetProperty("choices", out var ch) && ch.GetArrayLength() > 0
@@ -144,12 +144,12 @@ public class LlmClient
                 }
             };
         }
-        // num_ctx sa cez OpenAI-kompatibilny endpoint nedá nastaviť - rieši ho server.
+        // num_ctx cannot be set via the OpenAI-compatible endpoint - the server handles it.
         return ($"{_root}/v1/chat/completions", JsonSerializer.Serialize(payload));
     }
 
-    /// Best-effort: zistí verziu Ollama servera (na overenie že podporuje structured outputs >= 0.5).
-    /// Pri OpenAI štýle / chybe vráti null.
+    /// Best-effort: retrieves the Ollama server version (to verify it supports structured outputs >= 0.5).
+    /// Returns null for OpenAI style or on error.
     public async Task<string?> TryGetVersionAsync(CancellationToken ct = default)
     {
         if (_style != ApiStyle.Ollama) return null;

@@ -19,10 +19,10 @@ PATH FOUND (4 nodes):
   117      {
   118          var seed = Bootstrap(targetFile, endpoint);
   119
-  120          // Deterministicky pre-flight: skus kandidatske find_path dvojice HNED. Na CPU je to
-  121          // rychlejsie a spolahlivejsie nez cakat na (casto podvyplnene) volania modelu. Roslyn
-  122          // je zdroj pravdy; model je tu len na navigaciu tazsich pripadov (interface/DI/eventy).
-  123          // --all-paths/--brute: enumeruj VSETKY cesty (deep), nie len prvu najkratsiu.
+  120          // Deterministic pre-flight: try candidate find_path pairs IMMEDIATELY. On CPU this is
+  121          // faster and more reliable than waiting for (often under-filled) model calls. Roslyn
+  122          // is the source of truth; the model is here only to navigate harder cases (interface/DI/events).
+  123          // --all-paths/--brute: enumerate ALL paths (deep), not just the first shortest one.
   124          var mode = _allPaths ? "brute-force (all paths)" : "first path";
   125          Console.WriteLine($"[pre-flight] deterministic find_path over {_pairs.Count} candidate pairs [{mode}]...");
   126          var deterministic = _allPaths ? await TryAllPaths() : await TryAutoPath();

@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <!-- Cielime net8.0: postavi sa SDK 8 (VDI) aj SDK 10 (tu). RollForward=Major nechá
-         net8 binárku bežať aj na novšom runtime (tu je nainštalovaný iba .NET 10). -->
+    <!-- Target net8.0: builds on an SDK 8 (the VDI) and an SDK 10 (here). RollForward=Major
+         lets the net8 binary run on a newer runtime too (only .NET 10 is installed here). -->
     <TargetFramework>net8.0</TargetFramework>
     <RollForward>Major</RollForward>
     <ImplicitUsings>enable</ImplicitUsings>

@@ -5,7 +5,7 @@ services:
     ports:
       - "11434:11434"          # API: http://localhost:11434/v1
     volumes:
-      - ollama_models:/root/.ollama   # modely preziju restart kontajnera
+      - ollama_models:/root/.ollama   # models survive a container restart
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "ollama", "list"]
@@ -13,10 +13,10 @@ services:
       timeout: 5s
       retries: 5
 
-    # ---- GPU (volitelne) ----------------------------------------------------
-    # Mas earlier hovoril ze bez GPU - tak toto nechaj zakomentovane.
-    # Ak by si neskor chcel NVIDIA GPU, doinstaluj nvidia-container-toolkit
-    # a odkomentuj:
+    # ---- GPU (optional) -----------------------------------------------------
+    # This setup is CPU-only, so leave this commented out.
+    # If you later want an NVIDIA GPU, install nvidia-container-toolkit
+    # and uncomment:
     #
     # deploy:
     #   resources:
@@ -26,8 +26,8 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
-  # Jednorazovy job ktory po starte servera stiahne model a skonci.
-  # Vdaka tomu pri prvom 'up' mas model rovno pripraveny.
+  # One-off job that pulls the model after the server starts, then exits.
+  # Thanks to this, the model is ready right after the first 'up'.
   model-puller:
     image: ollama/ollama:latest
     depends_on:

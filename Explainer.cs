@@ -3,9 +3,9 @@ using System.Text;
 namespace CodeTracer;
 
 /// <summary>
-/// Režim "explain method": Roslyn pripraví kompaktný kontext jednej metódy a model
-/// ho JEDNÝM neobmedzeným callom vysvetlí krok po kroku (+ návrh úpravy, ak je cieľ).
-/// Toto hrá na silu malého modelu (vysvetliť dodaný kód), nie na slabinu (navigácia).
+/// "Explain method" mode: Roslyn prepares a compact context for a single method and the model
+/// explains it step by step in ONE unlimited call (+ a change proposal if a goal is given).
+/// This plays to the strength of a small model (explaining supplied code), not its weakness (navigation).
 /// </summary>
 public class Explainer
 {
@@ -25,10 +25,10 @@ public class Explainer
         _blockThreshold = blockThreshold;
     }
 
-    /// "relpath:line" -> klikatelny markdown link na repo (ak je repoUrl), inak plain text.
+    /// "relpath:line" -> clickable markdown link to the repo (if repoUrl is set), otherwise plain text.
     public static string LinkLoc(string location, string? repoUrl) => RoslynIndex.RepoLink(location, repoUrl);
 
-    /// Prvych N riadkov tela (peek). N<=0 => cele telo.
+    /// First N lines of the body (peek). N<=0 => entire body.
     private static string Peek(string src, int n)
     {
         if (n <= 0) return src;
@@ -44,7 +44,7 @@ public class Explainer
 
     public async Task<string> ExplainAsync(MethodContext ctx, string? goal, string? question = null)
     {
-        // Self-describing header - aby ulozeny .md davalo zmysel aj samostatne (pre kolegov).
+        // Self-describing header - so that a saved .md makes sense on its own (for colleagues).
         var sb = new StringBuilder();
         sb.AppendLine($"# {ctx.Display}  ({LinkLoc(ctx.Location, _repoUrl)})");
         sb.AppendLine($"`{ctx.Signature}`");
@@ -52,10 +52,10 @@ public class Explainer
             sb.AppendLine($"> **Question:** {question!.Trim()}");
         sb.AppendLine();
 
-        // Vysvetlenie a navrh upravy su DVA samostatne cally - kazdy dostane plny
-        // token budget, takze verbozne vysvetlenie nikdy "nezje" navrh upravy.
+        // Explanation and change proposal are TWO separate calls - each gets its full
+        // token budget, so a verbose explanation never "eats into" the change proposal.
         var explanation = ctx.BodyLineCount > _blockThreshold
-            ? await ExplainByBlocks(ctx, question)     // dlhe metody: blok po bloku + suhrn
+            ? await ExplainByBlocks(ctx, question)     // long methods: block by block + summary
             : await Ask(BuildUserPrompt(ctx, ctx.Source, question));
         sb.AppendLine(explanation.Trim());
 
@@ -97,7 +97,7 @@ public class Explainer
             partial.Add($"{label}: {Shorten(part, 600)}");
         }
 
-        // zaverecny suhrn cez vysledky blokov
+        // final summary across the block results
         var summaryPrompt = new StringBuilder();
         summaryPrompt.AppendLine(HeaderBlock(ctx));
         summaryPrompt.AppendLine("You have partial explanations of the individual blocks:");
@@ -127,7 +127,7 @@ public class Explainer
         sb.AppendLine("Task:");
         if (!string.IsNullOrWhiteSpace(question))
         {
-            // Otazka ide PRVA - aby na nu model odpovedal aj keby ho num_predict skratil.
+            // The question goes FIRST - so the model answers it even if num_predict cuts it short.
             sb.AppendLine($"PRIMARY: answer this question first, directly and concretely: {question!.Trim()}");
             sb.AppendLine("Use the method body, its dependencies, and its callers (REACHED FROM) above as needed.");
             sb.AppendLine("Then, more briefly:");
@@ -141,7 +141,7 @@ public class Explainer
         return sb.ToString();
     }
 
-    /// Navrh konkretnej upravy ako SAMOSTATNY call (plny token budget, nezavisle od vysvetlenia).
+    /// Proposal for a concrete change as a SEPARATE call (full token budget, independent of the explanation).
     private async Task<string> ProposeChange(MethodContext ctx, string goal)
     {
         var sb = new StringBuilder();
@@ -159,7 +159,7 @@ public class Explainer
         return await Ask(sb.ToString());
     }
 
-    /// Prida (skratene) tela in-solution zavislosti, aby model vedel vysvetlit interplay.
+    /// Appends (truncated) bodies of in-solution dependencies so the model can explain the interplay.
     private static void AppendDependencies(StringBuilder sb, MethodContext ctx)
     {
         if (ctx.Dependencies.Count == 0) return;
@@ -174,7 +174,7 @@ public class Explainer
         }
     }
 
-    /// Strukturovana hlavicka kontextu - kompaktna, nikdy nie cely subor.
+    /// Structured context header - compact, never the entire file.
     private static string HeaderBlock(MethodContext ctx)
     {
         var sb = new StringBuilder();
@@ -213,12 +213,12 @@ public class Explainer
         {
             Temperature = _temperature,
             NumPredict = numPredict ?? _numPredict,
-            // Format zamerne null - explain je volny text (sila modelu), ziadna gramatika.
+            // Format intentionally null - explain is free text (the model's strength), no grammar constraint.
         });
     }
 
-    /// Deep explain: vysvetli CELU logiku po call-chain. Kazdu metodu retazca vysvetli
-    /// SAMOSTATNYM callom (plna pozornost, nie skrateny snippet), potom synteza end-to-end.
+    /// Deep explain: explains the ENTIRE logic along the call chain. Each method in the chain is explained
+    /// with a SEPARATE call (full attention, not a truncated snippet), followed by an end-to-end synthesis.
     public async Task<string> ExplainChainAsync(
         IReadOnlyList<(int level, MethodContext ctx)> chain, string? goal, string? question)
     {
@@ -231,7 +231,7 @@ public class Explainer
         sb.AppendLine($"_Deep explanation following the call chain ({chain.Count} methods)._");
         sb.AppendLine();
 
-        // Kazdy uzol kratsi (focus na svoju metodu); synteza dostane plny budget.
+        // Each node is kept shorter (focused on its own method); synthesis gets the full budget.
         int nodeBudget = Math.Min(_numPredict, 1100);
         var notes = new List<string>();
         int i = 0;
@@ -246,7 +246,7 @@ public class Explainer
             notes.Add($"L{level} {ctx.Display}: {Shorten(part, 500)}");
         }
 
-        // synteza: ako to spolu hra od vstupu po vystup
+        // synthesis: how it all fits together from input to output
         Console.Error.WriteLine("[explain] synthesizing end-to-end logic ...");
         var synth = new StringBuilder();
         synth.AppendLine($"Entry method: {root.Display}  ({root.Signature}).");
@@ -290,9 +290,9 @@ public class Explainer
     private static string Shorten(string s, int max) =>
         s.Length <= max ? s.Trim() : s[..max].Trim() + " ...";
 
-    /// --no-llm: vyrenderuje Roslynom vytiahnuty kontext (metoda + call-chain + zdrojaky)
-    /// do markdownu BEZ volania modelu. Vystup je pripraveny na vlozenie do vacsieho modelu.
-    /// repoUrl => klikatelne linky na cely subor v repe; peek>0 => len prvych N riadkov tela.
+    /// --no-llm: renders the Roslyn-extracted context (method + call-chain + sources)
+    /// to markdown WITHOUT calling the model. Output is ready to paste into a larger model.
+    /// repoUrl => clickable links to the full file in the repo; peek>0 => only the first N lines of the body.
     public static string RenderContext(IReadOnlyList<(int level, MethodContext ctx)> chain,
                                        string? repoUrl = null, int peek = 0)
     {

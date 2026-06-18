@@ -1,9 +1,9 @@
 using CodeTracer;
 using Microsoft.Build.Locator;
 
-// DOLEZITE: MSBuildLocator musi byt zaregistrovany skor nez sa dotkneme
-// akehokolvek Roslyn/MSBuild typu. Preto je vsetka praca v Run*() metodach,
-// nie inline tu - aby JIT nenacital tie typy predcasne.
+// IMPORTANT: MSBuildLocator must be registered before we touch
+// any Roslyn/MSBuild type. That is why all the work is in Run*() methods,
+// not inline here — so the JIT does not load those types prematurely.
 if (!MSBuildLocator.IsRegistered)
     MSBuildLocator.RegisterDefaults();
 
@@ -19,7 +19,7 @@ static async Task<int> RunApp(string[] args)
     };
 }
 
-// ---- trace: autonomny agent na dohladanie call-chain -------------------------
+// ---- trace: autonomous agent for tracing the call chain ----------------------
 
 static async Task<int> RunTrace(Options opts)
 {
@@ -42,7 +42,7 @@ static async Task<int> RunTrace(Options opts)
     return 0;
 }
 
-// ---- explain: krok-za-krokom vysvetlenie jednej metody -----------------------
+// ---- explain: step-by-step explanation of a single method -------------------
 
 static async Task<int> RunExplain(Options opts)
 {
@@ -59,7 +59,7 @@ static async Task<int> RunExplain(Options opts)
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
 
-    // rozlis ciel: --method "Class.Method" alebo --file + --line
+    // distinguish target: --method "Class.Method" or --file + --line
     string? cls = null, method = null;
     if (!string.IsNullOrWhiteSpace(opts.Method))
     {
@@ -78,7 +78,7 @@ static async Task<int> RunExplain(Options opts)
         return 1;
     }
 
-    // postav call-chain (depth 0 = len metoda) - pouzije sa pre model aj pre --no-llm dump
+    // build the call chain (depth 0 = the method alone) — used both for the model and for the --no-llm dump
     List<(int level, MethodContext ctx)>? chain;
     if (opts.Depth <= 0)
     {
@@ -106,7 +106,7 @@ static async Task<int> RunExplain(Options opts)
     string text;
     if (!opts.UseLlm)
     {
-        // --no-llm: NEVYSVETLUJ lokalne - len vydaj Roslynom vytiahnuty kontext (na vacsi model).
+        // --no-llm: do NOT explain locally — just emit the Roslyn-extracted context (for a bigger model).
         Console.Error.WriteLine($"[explain] --no-llm: dumping Roslyn context for {chain.Count} method(s), no model call.");
         text = Explainer.RenderContext(chain, opts.RepoUrl, opts.Peek);
     }
@@ -133,7 +133,7 @@ static async Task<int> RunExplain(Options opts)
     return 0;
 }
 
-// ---- spolocne pomocky --------------------------------------------------------
+// ---- shared helpers ----------------------------------------------------------
 
 static async Task<bool> TryLoad(RoslynIndex index, string solution)
 {
@@ -298,23 +298,23 @@ class Options
     public string? Endpoint;
     public int MaxSteps = 25;
     public bool Summary = false;
-    public bool UseLlm = true;     // --no-llm: cisto deterministicky find_path, bez modelu
-    public bool AllPaths = false;  // --all-paths/--brute: enumeruj VSETKY cesty, nie len prvu
-    public bool WithBodies = false;// --with-bodies/--code: medzi kroky vlozi telo metody po call-site
+    public bool UseLlm = true;     // --no-llm: purely deterministic find_path, no model
+    public bool AllPaths = false;  // --all-paths/--brute: enumerate ALL paths, not just the first
+    public bool WithBodies = false;// --with-bodies/--code: between hops inserts the method body up to the call site
 
     // explain
     public string? Method;
     public string? File;
     public int Line = 0;
-    public int Depth = 1;          // hlbka call-chain pre deep explain (0 = len metoda)
-    public int MaxMethods = 8;     // strop poctu metod v deep-explain retazci
-    public string? Question;       // --question/--ask: konkretna otazka, na ktoru sa ma sustredit
+    public int Depth = 1;          // call chain depth for deep explain (0 = the method alone)
+    public int MaxMethods = 8;     // cap on the number of methods in the deep-explain chain
+    public string? Question;       // --question/--ask: a specific question to focus the explanation on
     public string? Goal;
     public string? Out;
-    public string? RepoUrl;        // --repo-url: base na klikatelne linky (napr. .../blob/main)
-    public int Peek = 0;           // --peek N: v --no-llm dumpe ukaz len prvych N riadkov tela
+    public string? RepoUrl;        // --repo-url: base URL for clickable links (e.g. .../blob/main)
+    public int Peek = 0;           // --peek N: in the --no-llm dump show only the first N lines of each method body
 
-    // spolocne
+    // shared
     public string Model = "gemma4:latest";
     public string Api = "http://localhost:11434";
     public ApiStyle ApiStyle = ApiStyle.Ollama;

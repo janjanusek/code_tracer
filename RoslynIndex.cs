@@ -9,9 +9,9 @@ using Microsoft.CodeAnalysis.MSBuild;
 namespace CodeTracer;
 
 /// <summary>
-/// Obal nad Roslyn workspace. Drzi nacitanu solution a poskytuje
-/// presnu analyzu: definicie, referencie, callerov, callees a najkratsiu
-/// cestu v call-grafe. Vsetko deterministicky - LLM len rozhoduje co volat.
+/// Wrapper around the Roslyn workspace. Holds the loaded solution and provides
+/// precise analysis: definitions, references, callers, callees, and the shortest
+/// path in the call graph. Everything is deterministic - the LLM only decides what to call.
 /// </summary>
 public class RoslynIndex
 {
@@ -24,7 +24,7 @@ public class RoslynIndex
         var workspace = MSBuildWorkspace.Create();
         workspace.WorkspaceFailed += (_, e) =>
         {
-            // Warningy pri loade su bezne (chybajuce analyzery atd.) - len logujeme.
+            // Warnings during load are common (missing analyzers, etc.) - just log them.
             if (e.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
                 Console.Error.WriteLine($"[workspace] {e.Diagnostic.Message}");
         };
@@ -48,7 +48,7 @@ public class RoslynIndex
 
     // ---- symbol resolution -------------------------------------------------
 
-    /// Najde vsetky deklaracie ktorych meno sa zhoduje (case-insensitive).
+    /// Finds all declarations whose name matches (case-insensitive).
     public async Task<List<ISymbol>> FindDeclarations(string name)
     {
         var result = new List<ISymbol>();
@@ -59,14 +59,14 @@ public class RoslynIndex
                 filter: SymbolFilter.TypeAndMember);
             result.AddRange(found);
         }
-        // deduplikacia podla definicie
+        // deduplicate by definition
         return result
             .GroupBy(s => s, SymbolEqualityComparer.Default)
             .Select(g => g.First())
             .ToList();
     }
 
-    /// Rozlisi metodu z "Trieda" + "Metoda". Vrati prvu zhodu (poznamena ambiguitu).
+    /// Resolves a method from "Class" + "Method". Returns the first match (notes ambiguity).
     public async Task<IMethodSymbol?> ResolveMethod(string className, string methodName)
     {
         var decls = await FindDeclarations(methodName);
@@ -89,7 +89,7 @@ public class RoslynIndex
         return (model, node);
     }
 
-    // ---- tools (vracaju kompaktny text pre LLM) ----------------------------
+    // ---- tools (return compact text for the LLM) ----------------------------
 
     public string Outline(string filePath)
     {
@@ -242,10 +242,10 @@ public class RoslynIndex
     }
 
     /// <summary>
-    /// Deterministicka najkratsia cesta v call-grafe od (fromClass.fromMethod)
-    /// k (toClass.toMethod). BFS smerom NAHOR cez callerov ciela az kym
-    /// nenarazime na zdroj. Toto je najspolahlivejsia operacia - LLM ju len
-    /// vola s vysledkom find_symbol/outline a potom interpretuje vystup.
+    /// Deterministic shortest path in the call graph from (fromClass.fromMethod)
+    /// to (toClass.toMethod). BFS going UPWARD through the target's callers until
+    /// we reach the source. This is the most reliable operation - the LLM just
+    /// calls it with the result of find_symbol/outline and then interprets the output.
     /// </summary>
     public async Task<string> FindPath(string fromClass, string fromMethod, string toClass, string toMethod,
                                        int maxNodes = 3000, bool withBodies = false, string? repoUrl = null)
@@ -260,7 +260,7 @@ public class RoslynIndex
 
         var queue = new Queue<IMethodSymbol>();
         var visited = new HashSet<ISymbol>(cmp) { target };
-        var calledBy = new Dictionary<ISymbol, IMethodSymbol>(cmp); // caller -> co volal (smerom k cielu)
+        var calledBy = new Dictionary<ISymbol, IMethodSymbol>(cmp); // caller -> what it called (toward the target)
 
         queue.Enqueue(target);
         int explored = 0;
@@ -276,11 +276,11 @@ public class RoslynIndex
                 if (c.CallingSymbol is not IMethodSymbol caller) continue;
                 if (visited.Contains(caller)) continue;
                 visited.Add(caller);
-                calledBy[caller] = current; // caller volá 'current' (smer k cielu)
+                calledBy[caller] = current; // caller calls 'current' (direction toward the target)
 
                 if (cmp.Equals(caller, start))
                 {
-                    // rekonstrukcia start -> ... -> target
+                    // reconstruct start -> ... -> target
                     var path = new List<IMethodSymbol> { start };
                     var node = (IMethodSymbol)start;
                     while (!cmp.Equals(node, target))
@@ -298,8 +298,8 @@ public class RoslynIndex
                "or find_callees from the source going down.";
     }
 
-    /// Vykresli najdenu cestu. withBodies=false -> kompaktny zoznam (pre model aj default trace).
-    /// withBodies=true -> medzi kroky vlozi telo metody OD zaciatku PO miesto volania dalsieho kroku.
+    /// Renders the found path. withBodies=false -> compact list (for the model and default trace).
+    /// withBodies=true -> inserts the method body FROM its beginning UP TO the call site of the next step.
     private async Task<string> RenderPath(List<IMethodSymbol> path, bool withBodies, string? repoUrl)
     {
         var sb = new System.Text.StringBuilder();
@@ -333,8 +333,8 @@ public class RoslynIndex
         return sb.ToString();
     }
 
-    /// Telo `caller` od jeho zaciatku po PRVE volanie `callee` (vratane), s line numbers
-    /// orezane na rozumnu dlzku. Plus link na call-site ak je repoUrl.
+    /// Body of `caller` from its beginning to the FIRST call to `callee` (inclusive), with line numbers
+    /// clipped to a reasonable length. Plus a link to the call site if repoUrl is provided.
     private async Task<string> SnippetUpToCall(IMethodSymbol caller, IMethodSymbol callee, string? repoUrl)
     {
         var body = await GetBody(caller);
@@ -365,7 +365,7 @@ public class RoslynIndex
         return sb.ToString();
     }
 
-    /// Riadky [from..to] (0-based, vratane) zo SourceText, s 1-based cislami, orezane na maxLines.
+    /// Lines [from..to] (0-based, inclusive) from SourceText, with 1-based numbers, clipped to maxLines.
     private static string ClipRange(Microsoft.CodeAnalysis.Text.SourceText text, int from, int to, int maxLines)
     {
         if (to < from) to = from;
@@ -386,7 +386,7 @@ public class RoslynIndex
         return sb.ToString();
     }
 
-    /// "relpath:line" -> markdown link na repo (ak je repoUrl), inak plain text.
+    /// "relpath:line" -> markdown link to the repo (if repoUrl is provided), otherwise plain text.
     public static string RepoLink(string location, string? repoUrl)
     {
         if (string.IsNullOrWhiteSpace(repoUrl)) return location;
@@ -397,8 +397,8 @@ public class RoslynIndex
         return $"[{location}]({repoUrl!.TrimEnd('/')}/{path}#L{line})";
     }
 
-    /// Strukturovany zoznam metod v subore: (trieda, metoda, riadok).
-    /// Pouziva sa na deterministicky bootstrap kandidatov pre find_path.
+    /// Structured list of methods in a file: (class, method, line).
+    /// Used for deterministic bootstrapping of candidates for find_path.
     public List<(string cls, string method, int line)> MethodsInFile(string filePath)
     {
         var result = new List<(string, string, int)>();
@@ -416,15 +416,15 @@ public class RoslynIndex
     }
 
     // ====================================================================
-    //  explain mode: kompaktny, struktrurovany kontext jednej metody.
-    //  Roslyn vytiahne IBA cielovu metodu + relevantny kontext - model
-    //  nikdy nedostane cely (5000-riadkovy) subor.
+    //  explain mode: compact, structured context for a single method.
+    //  Roslyn extracts ONLY the target method + relevant context - the model
+    //  never receives the entire (5000-line) file.
     // ====================================================================
 
     private static readonly SymbolDisplayFormat ShortType =
         SymbolDisplayFormat.MinimallyQualifiedFormat;
 
-    /// Kontext metody z "Trieda" + "Metoda". depth = do akej hlbky natiahnut tela callees.
+    /// Context for a method from "Class" + "Method". depth = how deep to pull in callee bodies.
     public async Task<MethodContext?> BuildMethodContext(string className, string methodName, int depth = 0)
     {
         var m = await ResolveMethod(className, methodName);
@@ -432,14 +432,14 @@ public class RoslynIndex
         return await BuildMethodContextFor(m, depth);
     }
 
-    /// Kontext metody, ktorej telo obsahuje dany riadok v danom subore.
+    /// Context for the method whose body contains the given line in the given file.
     public async Task<MethodContext?> BuildMethodContextByLocation(string filePath, int line, int depth = 0)
     {
         var sym = await ResolveByLocation(filePath, line);
         return sym == null ? null : await BuildMethodContextFor(sym, depth);
     }
 
-    /// Najde IMethodSymbol metody, ktorej telo obsahuje dany riadok (najtesnejsia).
+    /// Finds the IMethodSymbol of the method whose body contains the given line (innermost match).
     private async Task<IMethodSymbol?> ResolveByLocation(string filePath, int line)
     {
         var full = Path.IsPathRooted(filePath) ? filePath : Path.Combine(SolutionDir, filePath);
@@ -470,12 +470,12 @@ public class RoslynIndex
     }
 
     // ====================================================================
-    //  deep explain: cela logika po call-chain. Namiesto nahltania N skratenych
-    //  tiel do JEDNEHO plytkeho callu prejde retazec metod (BFS po in-solution
-    //  callees do hlbky `depth`, cap `maxMethods`) a kazdu vysvetli SAMOSTATNE.
+    //  deep explain: full logic along the call chain. Instead of stuffing N truncated
+    //  bodies into ONE shallow call, it walks the chain of methods (BFS over in-solution
+    //  callees up to depth `depth`, cap `maxMethods`) and explains each one SEPARATELY.
     // ====================================================================
 
-    /// In-solution metody (so zdrojakom), ktore dana metoda vola. Deduplikovane.
+    /// In-solution methods (with source), called by the given method. Deduplicated.
     private async Task<List<IMethodSymbol>> InSolutionCallees(IMethodSymbol m)
     {
         var result = new List<IMethodSymbol>();
@@ -489,14 +489,14 @@ public class RoslynIndex
         foreach (var inv in scanRoot.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
             if (model.GetSymbolInfo(inv).Symbol is not IMethodSymbol callee) continue;
-            if (!callee.Locations.Any(l => l.IsInSource)) continue;     // preskoc framework/extern
+            if (!callee.Locations.Any(l => l.IsInSource)) continue;     // skip framework/extern
             if (seen.Add(Sig(callee))) result.Add(callee);
         }
         return result;
     }
 
-    /// Vrati retazec metod (root + in-solution callees do hlbky `depth`, cap `maxMethods`),
-    /// kazdu ako samostatny depth-0 kontext. Poradie BFS (root prvy). null = root nenajdeny.
+    /// Returns the chain of methods (root + in-solution callees up to depth `depth`, cap `maxMethods`),
+    /// each as an independent depth-0 context. BFS order (root first). null = root not found.
     public async Task<List<(int level, MethodContext ctx)>?> BuildExplainChain(
         string className, string methodName, int depth, int maxMethods)
     {
@@ -544,7 +544,7 @@ public class RoslynIndex
     private async Task<MethodContext?> BuildMethodContextFor(IMethodSymbol m, int depth = 0)
     {
         var body = await GetBody(m);
-        if (body == null) return null;                  // bez zdrojaku (metadata) - nic nevysvetlime
+        if (body == null) return null;                  // no source (metadata) - nothing to explain
         var (model, node) = body.Value;
         if (node is not BaseMethodDeclarationSyntax decl) return null;
 
@@ -552,14 +552,14 @@ public class RoslynIndex
         var location = loc != null ? Rel(loc) : "?";
         var type = m.ContainingType;
 
-        // scanRoot = telo metody (block alebo expression body); nie signatura
+        // scanRoot = method body (block or expression body); not the signature
         SyntaxNode scanRoot = (SyntaxNode?)decl.Body ?? (SyntaxNode?)decl.ExpressionBody ?? decl;
 
         var parameters = m.Parameters
             .Select(p => $"{p.Type.ToDisplayString(ShortType)} {p.Name}")
             .ToList();
 
-        // ---- citane / zapisovane polia a property triedy ----
+        // ---- fields and properties of the class that are read / written ----
         var reads = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var writes = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var name in scanRoot.DescendantNodes().OfType<SimpleNameSyntax>())
@@ -580,10 +580,10 @@ public class RoslynIndex
             }
         }
 
-        // ---- callees (volane metody) so signaturou a 1-riadkovym povodom ----
+        // ---- callees (called methods) with signature and 1-line origin ----
         var callees = new List<string>();
         var seenCallee = new HashSet<string>();
-        var calleeSymbols = new List<IMethodSymbol>();   // in-solution callees na expanziu
+        var calleeSymbols = new List<IMethodSymbol>();   // in-solution callees for expansion
         foreach (var inv in scanRoot.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
             if (model.GetSymbolInfo(inv).Symbol is not IMethodSymbol callee) continue;
@@ -592,7 +592,7 @@ public class RoslynIndex
             var cloc = callee.Locations.FirstOrDefault(l => l.IsInSource);
             var origin = cloc != null ? Rel(cloc) : "extern/metadata";
             callees.Add($"{sig}  - {callee.ContainingType?.Name} ({origin})");
-            if (cloc != null) calleeSymbols.Add(callee);     // ma zdrojak -> da sa expandovat
+            if (cloc != null) calleeSymbols.Add(callee);     // has source -> can be expanded
             if (callees.Count >= 30) break;
         }
 
@@ -600,12 +600,12 @@ public class RoslynIndex
         int bodyLines = src.Count(ch => ch == '\n') + 1;
         var doc = CleanDoc(m.GetDocumentationCommentXml());
 
-        // ---- expanzia zavislosti do hlbky `depth` (in-solution, tvrdo zastropovane) ----
+        // ---- expand dependencies up to depth `depth` (in-solution, hard-capped) ----
         var deps = depth > 0
             ? await ExpandDependencies(m, calleeSymbols, depth)
             : new List<(string, string)>();
 
-        // ---- calleri (smer NAHOR) - "ako sa sem da dostat"; len pri depth>0, best-effort ----
+        // ---- callers (direction UPWARD) - "how to get here"; only when depth>0, best-effort ----
         var callers = new List<string>();
         if (depth > 0)
         {
@@ -618,7 +618,7 @@ public class RoslynIndex
                     if (callers.Count >= 6) break;
                 }
             }
-            catch { /* na velkej solution moze byt drahe/zlyhat - nie je kriticke */ }
+            catch { /* can be expensive/fail on a large solution - not critical */ }
         }
 
         return new MethodContext(
@@ -637,12 +637,12 @@ public class RoslynIndex
             Callers: callers);
     }
 
-    // Tvrde stropy pre expanziu zavislosti - aby spagetti kod nezahltil kontext / CPU.
+    // Hard caps for dependency expansion - to prevent spaghetti code from flooding the context / CPU.
     private const int MaxDepMethods = 8;
     private const int MaxDepLines = 40;
 
-    /// BFS cez in-solution callees do hlbky `depth`. Vrati skratene tela (cap na pocet
-    /// metod aj riadkov). Preskakuje rekurziu, externe symboly a uz videne metody.
+    /// BFS over in-solution callees up to depth `depth`. Returns truncated bodies (capped on method count
+    /// and line count). Skips recursion, external symbols, and already-visited methods.
     private async Task<List<(string display, string code)>> ExpandDependencies(
         IMethodSymbol root, List<IMethodSymbol> firstLevel, int depth)
     {
@@ -665,7 +665,7 @@ public class RoslynIndex
             var where = loc != null ? Rel(loc) : "?";
             result.Add(($"{Sig(sym)}  {where}", ClipLines(node.ToString(), MaxDepLines)));
 
-            if (d < depth)   // este o uroven nizsie
+            if (d < depth)   // go one level deeper
             {
                 var (cmodel, cnode) = body.Value;
                 foreach (var inv in cnode.DescendantNodes().OfType<InvocationExpressionSyntax>())
@@ -687,14 +687,14 @@ public class RoslynIndex
         return string.Join("\n", lines.Take(maxLines)) + "\n    // ... (truncated)";
     }
 
-    /// Rozbije dlhe telo na logicke bloky (po vrchnych statementoch, ~120 riadkov/blok)
-    /// pre vysvetlenie blok-po-bloku pri extremne dlhych metodach.
+    /// Splits a long method body into logical blocks (by top-level statements, ~120 lines/block)
+    /// for block-by-block explanation of extremely long methods.
     public static List<(string label, string code)> SplitLongMethod(MethodContext ctx)
     {
         var result = new List<(string, string)>();
         if (ctx.Declaration is not BaseMethodDeclarationSyntax decl || decl.Body is not { } block)
         {
-            result.Add(("Cele telo", ctx.Source));
+            result.Add(("Full body", ctx.Source));
             return result;
         }
 
@@ -707,7 +707,7 @@ public class RoslynIndex
             if (cur.Count == 0) return;
             int s = cur[0].GetLocation().GetLineSpan().StartLinePosition.Line + 1;
             int e = cur[^1].GetLocation().GetLineSpan().EndLinePosition.Line + 1;
-            result.Add(($"Blok {idx++} (riadky {s}-{e})", string.Join("\n", cur.Select(st => st.ToString()))));
+            result.Add(($"Block {idx++} (lines {s}-{e})", string.Join("\n", cur.Select(st => st.ToString()))));
             cur.Clear();
             curLines = 0;
         }
@@ -722,11 +722,11 @@ public class RoslynIndex
             if (curLines >= budget) Flush();
         }
         Flush();
-        if (result.Count == 0) result.Add(("Cele telo", ctx.Source));
+        if (result.Count == 0) result.Add(("Full body", ctx.Source));
         return result;
     }
 
-    // ---- pomocne pre explain ----
+    // ---- helpers for explain ----
 
     private static bool IsSelfMember(ISymbol sym, INamedTypeSymbol? type)
     {
@@ -744,8 +744,8 @@ public class RoslynIndex
         _ => sym.Name
     };
 
-    /// Vystupi z member-access retazca (this.a.b -> najvyssie b je zaver) na vyraz,
-    /// ktoreho zapis/citanie ma zmysel skumat.
+    /// Walks up a member-access chain (this.a.b -> the outermost b is the end) to the expression
+    /// whose write/read context is meaningful to examine.
     private static ExpressionSyntax OutermostAccess(SimpleNameSyntax name)
     {
         ExpressionSyntax expr = name;
@@ -760,7 +760,7 @@ public class RoslynIndex
         switch (expr.Parent)
         {
             case AssignmentExpressionSyntax asg when asg.Left == expr:
-                alsoReads = !asg.IsKind(SyntaxKind.SimpleAssignmentExpression);   // += -= ... aj citaju
+                alsoReads = !asg.IsKind(SyntaxKind.SimpleAssignmentExpression);   // += -= ... also read
                 return true;
             case PostfixUnaryExpressionSyntax:
                 alsoReads = true;
@@ -770,7 +770,7 @@ public class RoslynIndex
                 alsoReads = true;
                 return true;
             case ArgumentSyntax arg when !arg.RefKindKeyword.IsKind(SyntaxKind.None):
-                alsoReads = arg.RefKindKeyword.IsKind(SyntaxKind.RefKeyword);     // ref aj cita, out len pise
+                alsoReads = arg.RefKindKeyword.IsKind(SyntaxKind.RefKeyword);     // ref also reads, out only writes
                 return true;
             default:
                 return false;
@@ -786,7 +786,7 @@ public class RoslynIndex
     }
 }
 
-/// <summary>Kompaktny strukturovany kontext jednej metody pre explain mode.</summary>
+/// <summary>Compact structured context for a single method for explain mode.</summary>
 public sealed record MethodContext(
     string Display,
     string Location,
@@ -799,8 +799,8 @@ public sealed record MethodContext(
     IReadOnlyList<string> Callees,
     string? DocComment,
     SyntaxNode Declaration,
-    // Skratene tela in-solution zavislosti (callees) do hlbky --depth - aby model
-    // vedel vysvetlit, ako metoda a jej zavislosti spolu hraju. (display, code)
+    // Truncated bodies of in-solution dependencies (callees) up to depth --depth - so the model
+    // can explain how the method and its dependencies work together. (display, code)
     IReadOnlyList<(string display, string code)> Dependencies,
-    // Kto metodu vola (smer NAHOR) - "ako sa sem da dostat". Vypln sa len pri depth>0.
+    // Who calls this method (direction UPWARD) - "how to get here". Populated only when depth>0.
     IReadOnlyList<string> Callers);

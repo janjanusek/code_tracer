@@ -16,10 +16,10 @@ public class Agent
     private readonly string? _outPath;
     private readonly int _actionNumPredict;
 
-    // Deterministicky predpripravene kandidatske dvojice pre find_path.
+    // Deterministically pre-built candidate pairs for find_path.
     private readonly List<(string fc, string fm, string tc, string tm)> _pairs = new();
 
-    // Posledny uspesny find_path - z neho sa pri `finish` zostavi finalna cesta (deterministicky).
+    // Last successful find_path - used to assemble the final path deterministically on `finish`.
     private string? _lastPath;
 
     public Agent(LlmClient llm, RoslynIndex index, int maxSteps = 25,
@@ -39,16 +39,16 @@ public class Agent
         _actionNumPredict = actionNumPredict;
     }
 
-    // Tools, ktore model smie zvolit. find_references je dispatchovatelny ale zamerne
-    // NIE je v schema enume (drzime mnozinu malu a plochu kvoli gramatike).
+    // Tools the model is allowed to choose. find_references is dispatchable but intentionally
+    // NOT in the schema enum (keeping the set small and flat for grammar reasons).
     private static readonly string[] AllowedTools =
         { "find_path", "find_callers", "find_callees", "get_method",
           "find_symbol", "outline", "read_file", "grep", "finish" };
 
-    // Plocha JSON schema akcie: jeden `tool` enum + jeden plochy `args` objekt so
-    // vsetkymi moznymi volitelnymi polami. Ziadne anyOf/oneOf, ziadne volnotextove
-    // polia (`thought` zamerne chyba - vo vnutri grammar-constrained JSON spustaju
-    // u malych modelov repetition-loop).
+    // Flat JSON schema for an action: one `tool` enum + one flat `args` object with
+    // all possible optional fields. No anyOf/oneOf, no free-text fields (`thought` is
+    // intentionally absent - inside grammar-constrained JSON it triggers a repetition-loop
+    // in small models).
     private const string ActionSchemaJson = """
     {
       "type": "object",
@@ -117,10 +117,10 @@ fall back to find_callers from the target going UP one hop at a time, then finis
     {
         var seed = Bootstrap(targetFile, endpoint);
 
-        // Deterministicky pre-flight: skus kandidatske find_path dvojice HNED. Na CPU je to
-        // rychlejsie a spolahlivejsie nez cakat na (casto podvyplnene) volania modelu. Roslyn
-        // je zdroj pravdy; model je tu len na navigaciu tazsich pripadov (interface/DI/eventy).
-        // --all-paths/--brute: enumeruj VSETKY cesty (deep), nie len prvu najkratsiu.
+        // Deterministic pre-flight: try candidate find_path pairs IMMEDIATELY. On CPU this is
+        // faster and more reliable than waiting for (often under-filled) model calls. Roslyn
+        // is the source of truth; the model is here only to navigate harder cases (interface/DI/events).
+        // --all-paths/--brute: enumerate ALL paths (deep), not just the first shortest one.
         var mode = _allPaths ? "brute-force (all paths)" : "first path";
         Console.WriteLine($"[pre-flight] deterministic find_path over {_pairs.Count} candidate pairs [{mode}]...");
         var deterministic = _allPaths ? await TryAllPaths() : await TryAutoPath();
@@ -151,7 +151,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             var act = await GetAction(messages);
             if (act == null)
             {
-                // model nedokazal dat platnu akciu ani po opravach -> deterministicka eskalacia
+                // model could not produce a valid action even after corrections -> deterministic escalation
                 Console.WriteLine("\n[auto] model gave no valid action - using deterministic result...");
                 await Finish(_lastPath ?? deterministic, "auto");
                 return;
@@ -167,7 +167,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
                 return;
             }
 
-            // --- detekcia zacyklenia -------------------------------------------------
+            // --- loop detection -------------------------------------------------
             var key = $"{tool}|{Canonical(args)}";
             if (!seen.Add(key))
             {
@@ -176,7 +176,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
 
                 if (escalations == 1)
                 {
-                    // este jedna sanca: explicitne mu nadiktujem find_path volania
+                    // one more chance: explicitly dictate the find_path calls to it
                     messages.Add(new("assistant", raw));
                     messages.Add(new("user",
                         "STOP. You already ran this exact tool+args. Do NOT repeat it.\n" +
@@ -184,7 +184,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
                     continue;
                 }
 
-                // model je zacykleny -> pouzijem deterministicky vysledok (do 2 krokov)
+                // model is looping -> use deterministic result (within 2 steps)
                 Console.WriteLine("[auto] loop detected - using deterministic result...");
                 await Finish(_lastPath ?? deterministic, "auto");
                 return;
@@ -206,26 +206,26 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             messages.Add(new("user", $"OBSERVATION:\n{observation}"));
         }
 
-        // limit krokov vycerpany -> pouzi najlepsi dostupny vysledok
+        // step limit exhausted -> use the best available result
         Console.WriteLine($"\n[!] step limit {_maxSteps} reached - using deterministic result");
         await Finish(_lastPath ?? deterministic, "limit");
     }
 
-    // ---- vyber akcie: token-level vynuteny JSON + validacia + retry ---------
+    // ---- action selection: token-level enforced JSON + validation + retry ---------
 
-    /// Pozaduje od modelu jednu akciu ako grammar-constrained JSON. Gramatika garantuje
-    /// STRUKTURU; tu validujeme HODNOTY (tool v enume, args davaju zmysel pre dany tool).
-    /// Pri zlej hodnote posle correction turn a skusi znova (max 2x), inak vrati null.
+    /// Requests one action from the model as grammar-constrained JSON. The grammar guarantees
+    /// STRUCTURE; here we validate VALUES (tool is in the enum, args make sense for the given tool).
+    /// On a bad value sends a correction turn and retries (max 2x), otherwise returns null.
     private async Task<(string tool, JsonElement args, string raw)?> GetAction(List<ChatMsg> messages)
     {
         var opts = new ChatOptions { Temperature = 0, NumPredict = _actionNumPredict, Format = ActionSchema };
 
-        for (int attempt = 0; attempt < 3; attempt++)   // 1 pokus + 2 opravy
+        for (int attempt = 0; attempt < 3; attempt++)   // 1 attempt + 2 corrections
         {
             var raw = (await _llm.ChatAsync(messages, opts)).Trim();
 
-            // gramatika by mala garantovat platny JSON; pri preruseni (num_predict) sa
-            // moze vratit neuzavrety - osetrime.
+            // the grammar should guarantee valid JSON; on interruption (num_predict) it may
+            // return unclosed JSON - handle that.
             JsonElement root;
             try { root = JsonDocument.Parse(raw).RootElement.Clone(); }
             catch
@@ -267,7 +267,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         return null;
     }
 
-    /// Vrati null ak su args ok, inak popis chybajucich poli pre dany tool.
+    /// Returns null if args are ok, otherwise a description of the missing fields for the given tool.
     private static string? ValidateArgs(string tool, JsonElement args)
     {
         string Get(string k) => args.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String
@@ -295,12 +295,12 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         static string? Empty(string s) => s.Length == 0 ? null : s;
     }
 
-    /// Kanonicka (stabilna) reprezentacia args pre detekciu opakovania.
+    /// Canonical (stable) representation of args for repeat-detection.
     private static string Canonical(JsonElement args) => JsonSerializer.Serialize(args).ToLowerInvariant();
 
-    // ---- finalizacia -------------------------------------------------------
+    // ---- finalization -------------------------------------------------------
 
-    /// Vypise finalnu cestu (zostavenu deterministicky) a volitelne neobmedzene zhrnutie.
+    /// Prints the final path (assembled deterministically) and an optional unconstrained summary.
     private async Task Finish(string pathText, string reason)
     {
         Console.WriteLine($"\n========== DONE ({reason}) ==========");
@@ -318,7 +318,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
 
         if (!_summarize) return;
 
-        // Volnotextove zhrnutie ako samostatny NEOBMEDZENY call (bez format).
+        // Free-text summary as a separate UNCONSTRAINED call (without format).
         try
         {
             var summary = await _llm.ChatAsync(new[]
@@ -336,11 +336,11 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         catch (Exception ex) { Console.Error.WriteLine($"[summary failed] {ex.Message}"); }
     }
 
-    // ---- deterministicky bootstrap -----------------------------------------
+    // ---- deterministic bootstrap -----------------------------------------
 
     private string Bootstrap(string targetFile, string endpoint)
     {
-        // endpoint: ak je to .cshtml, handler je v .cshtml.cs
+        // endpoint: if it is a .cshtml, the handler lives in .cshtml.cs
         var endpointCs = endpoint.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase)
             ? endpoint + ".cs" : endpoint;
 
@@ -368,9 +368,9 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             sb.AppendLine($"  {m.cls}.{m.method}  :{m.line}");
         sb.AppendLine();
 
-        // vyber kandidatov: handlery (On*) ako zdroj, vsetky cielove metody ako ciel
+        // select candidates: handlers (On*) as source, all target methods as destination
         var handlers = fromMethods.Where(m => m.method.StartsWith("On", StringComparison.Ordinal)).ToList();
-        if (handlers.Count == 0) handlers = fromMethods;                 // fallback: vsetky
+        if (handlers.Count == 0) handlers = fromMethods;                 // fallback: all
         var targets = toMethods
             .Where(m => !m.method.Equals(".ctor"))
             .OrderByDescending(m => m.method.EndsWith("Async") ||
@@ -397,7 +397,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         return sb.Length == 0 ? "  (no candidates - use find_symbol to resolve the endpoint)" : sb.ToString();
     }
 
-    /// Deterministicky preide vsetky kandidatske dvojice a vrati prvu najdenu cestu.
+    /// Deterministically iterates all candidate pairs and returns the first path found.
     private async Task<string> TryAutoPath()
     {
         foreach (var p in _pairs)
@@ -406,7 +406,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             if (res.Contains("PATH FOUND"))
                 return $"(find_path {p.fc}.{p.fm} -> {p.tc}.{p.tm})\n{res}";
         }
-        // ziadna priama cesta -> aspon ukaz kto vola cielove metody (callers nahor)
+        // no direct path -> at least show who calls the target methods (callers going up)
         var sb = new StringBuilder("No direct path found. Callers of the target methods (going up):\n");
         foreach (var t in _pairs.Select(p => (p.tc, p.tm)).Distinct().Take(3))
         {
@@ -416,8 +416,8 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         return sb.ToString();
     }
 
-    /// Brute-force (--all-paths): prejde VSETKY kandidatske dvojice a vrati VSETKY distinct
-    /// najdene cesty. Pre netrivialny kod, kde existuje viac ciest a prva/najkratsia nestaci.
+    /// Brute-force (--all-paths): iterates ALL candidate pairs and returns ALL distinct
+    /// found paths. For non-trivial code where multiple paths exist and the first/shortest is not enough.
     private async Task<string> TryAllPaths()
     {
         var sb = new StringBuilder();
@@ -428,7 +428,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm, maxNodes: 20000,
                                             withBodies: _withBodies, repoUrl: _repoUrl);
             if (!res.Contains("PATH FOUND")) continue;
-            if (!seen.Add(res)) continue;       // dedup identicke cesty
+            if (!seen.Add(res)) continue;       // dedup identical paths
             found++;
             sb.AppendLine($"### Path {found}:  {p.fc}.{p.fm}  ->  {p.tc}.{p.tm}");
             sb.AppendLine(res.Trim());
