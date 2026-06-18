@@ -202,7 +202,7 @@ public class Explainer
         return sb.ToString();
     }
 
-    private async Task<string> Ask(string userContent, int? numPredict = null)
+    private async Task<string> Ask(string userContent, int? numPredict = null, string label = "explain")
     {
         var msgs = new[]
         {
@@ -214,7 +214,7 @@ public class Explainer
             Temperature = _temperature,
             NumPredict = numPredict ?? _numPredict,
             // Format intentionally null - explain is free text (the model's strength), no grammar constraint.
-        });
+        }, label);
     }
 
     /// Deep explain: explains the ENTIRE logic along the call chain. Each method in the chain is explained

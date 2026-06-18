@@ -149,13 +149,13 @@ Here is a step-by-step explanation:
 ## End-to-end logic
 The execution flow begins at **L0 Agent.GetAction**, which acts as the primary orchestration layer responsible for translating a conversational context into a structured, executable action (a tool call).
 
-### 1. Initial Context and API Call (L0 $\rightarrow$ L1)
+### 1. Initial Context and API Call (L0 → L1)
 
 1.  **Entry Point:** The process starts with `Agent.GetAction`, receiving a list of conversation messages (`messages`).
 2.  **LLM Interaction:** `Agent.GetAction` immediately delegates the core task to **L1 LlmClient.ChatAsync**. This method is responsible for communicating with an external Large Language Model (LLM) API endpoint.
 3.  **API Preparation (Internal):** Before calling `ChatAsync`, the system must determine which LLM backend to use. If connecting to Ollama, **L2 LlmClient.BuildOllama** constructs the necessary API URL and JSON payload using the input messages and configuration options. Similarly, if using OpenAI, **L2 LlmClient.BuildOpenAI** performs this preparation for that specific endpoint.
 4.  **Execution:** `ChatAsync` sends the prepared chat message payload to the external LLM service and waits for a raw text response from the model.
 
-### 2. Parsing and Validation (L0 $\rightarrow$ L1)
+### 2. Parsing and Validation (L0 → L1)
 
 1.  **Raw Output Reception:** The raw text output received from the

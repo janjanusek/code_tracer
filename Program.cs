@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CodeTracer;
 using Microsoft.Build.Locator;
 
@@ -23,13 +24,19 @@ static async Task<int> RunApp(string[] args)
 
 static async Task<int> RunTrace(Options opts)
 {
-    opts.Solution   ??= Ask("Path to solution (.sln)");
-    opts.TargetFile ??= Ask("Path to file of class A (where the call we look for lives)");
-    opts.Endpoint   ??= Ask("Endpoint / starting point B (e.g. 'POST /orders' or 'OrdersController.Create')");
+    opts.Solution ??= Ask("Path to solution (.sln)");
+    // --from/--to: direct method-to-method find_path. Otherwise the endpoint/target-file flow.
+    bool direct = !string.IsNullOrWhiteSpace(opts.From) && !string.IsNullOrWhiteSpace(opts.To);
+    if (!direct)
+    {
+        opts.TargetFile ??= Ask("Path to file of class A (where the call we look for lives)");
+        opts.Endpoint   ??= Ask("Endpoint / starting point B (e.g. 'POST /orders' or 'OrdersController.Create')");
+    }
 
     Console.Error.WriteLine($"[cfg] mode=trace  api={opts.Api}  style={opts.ApiStyle}  model={opts.Model}  " +
                             $"numCtx={opts.NumCtx}  maxSteps={opts.MaxSteps}");
 
+    var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
     if (!await TryLoad(index, opts.Solution!)) return 1;
 
@@ -38,8 +45,34 @@ static async Task<int> RunTrace(Options opts)
 
     var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths,
                           opts.WithBodies || opts.Annotate, opts.Annotate, opts.RepoUrl, opts.Out);
-    await agent.RunAsync(opts.Solution!, opts.TargetFile!, opts.Endpoint!);
+
+    if (direct)
+    {
+        if (!TrySplit(opts.From!, out var fc, out var fm) || !TrySplit(opts.To!, out var tc, out var tm))
+        {
+            Console.Error.WriteLine("[error] --from / --to expect the format \"Class.Method\".");
+            return 1;
+        }
+        await agent.RunDirectAsync(fc, fm, tc, tm);
+    }
+    else
+    {
+        await agent.RunAsync(opts.Solution!, opts.TargetFile!, opts.Endpoint!);
+    }
+
+    ReportPerf(llm, sw);
     return 0;
+}
+
+// "Namespace.Class.Method" / "Class.Method" -> (Class, Method) using the last two segments.
+static bool TrySplit(string classDotMethod, out string cls, out string method)
+{
+    cls = method = "";
+    var parts = classDotMethod.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length < 2) return false;
+    method = parts[^1];
+    cls = parts[^2];
+    return true;
 }
 
 // ---- explain: step-by-step explanation of a single method -------------------
@@ -53,6 +86,7 @@ static async Task<int> RunExplain(Options opts)
     Console.Error.WriteLine($"[cfg] mode=explain  api={opts.Api}  style={opts.ApiStyle}  model={opts.Model}  " +
                             $"numCtx={opts.NumCtx}  numPredict={opts.NumPredict}");
 
+    var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
     if (!await TryLoad(index, opts.Solution!)) return 1;
 
@@ -95,6 +129,13 @@ static async Task<int> RunExplain(Options opts)
         chain = cls != null
             ? await index.BuildExplainChain(cls, method!, opts.Depth, opts.MaxMethods)
             : await index.BuildExplainChainByLocation(opts.File!, opts.Line, opts.Depth, opts.MaxMethods);
+
+        // property fallback: a property is not a call-chain root - explain it as a single node.
+        if ((chain == null || chain.Count == 0) && cls != null)
+        {
+            var ctx = await index.BuildMethodContext(cls, method!, opts.Depth);
+            if (ctx != null) chain = new List<(int, MethodContext)> { (0, ctx) };
+        }
     }
 
     if (chain == null || chain.Count == 0)
@@ -130,6 +171,7 @@ static async Task<int> RunExplain(Options opts)
         }
         catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
     }
+    ReportPerf(llm, sw);
     return 0;
 }
 
@@ -144,6 +186,26 @@ static async Task<bool> TryLoad(RoslynIndex index, string solution)
         Console.Error.WriteLine("Tip: run 'dotnet restore' and 'dotnet build' on the target solution first, " +
                                 "so MSBuild can open it.");
         return false;
+    }
+}
+
+static void ReportPerf(LlmClient llm, Stopwatch sw)
+{
+    sw.Stop();
+    var inv = System.Globalization.CultureInfo.InvariantCulture;
+    var t = sw.Elapsed.TotalSeconds.ToString("F1", inv);
+    if (llm.Calls == 0)
+    {
+        Console.Error.WriteLine($"[perf] {t}s · 0 model calls (deterministic)");
+        return;
+    }
+    Console.Error.WriteLine($"[perf] {t}s total · {llm.Calls} model call(s) · " +
+                            $"in {llm.PromptTokens} / out {llm.EvalTokens} tokens ({llm.Model})");
+    int n = 1;
+    foreach (var c in llm.CallLog)
+    {
+        var lbl = string.IsNullOrEmpty(c.Label) ? "" : $" [{c.Label}]";
+        Console.Error.WriteLine($"[perf]   call {n++}{lbl}: {c.Seconds.ToString("F1", inv)}s · in {c.In} / out {c.Out}");
     }
 }
 
@@ -180,6 +242,8 @@ static Options ParseArgs(string[] args)
             case "-s": case "--solution":     o.Solution = Next(); break;
             case "-f": case "--target-file":  o.TargetFile = Next(); break;
             case "-e": case "--endpoint":     o.Endpoint = Next(); break;
+            case "--from":                    o.From = Next(); break;
+            case "--to":                      o.To = Next(); break;
             case "--method":                  o.Method = Next(); break;
             case "--file":                    o.File = Next(); break;
             case "--line":                    if (int.TryParse(Next(), out var ln)) o.Line = ln; break;
@@ -227,6 +291,8 @@ TRACE options:
   -s, --solution      path to the .sln
   -f, --target-file   path to the file of class A (where the call we look for lives)
   -e, --endpoint      starting point B (route or Class.Method)
+      --from "C.M"    direct mode: find the path FROM this method ...
+      --to "C.M"      ... TO this method (skips -f/-e; "how do I get from C.M to C2.M2")
       --all-paths     (--brute / --deep) enumerate ALL distinct paths, not just the first.
                       For non-trivial code where one shortest path isn't enough.
       --with-bodies   (--code) between hops, show each method's code from its start down to
@@ -301,6 +367,8 @@ class Options
     // trace
     public string? TargetFile;
     public string? Endpoint;
+    public string? From;           // --from "Class.Method": direct find_path source
+    public string? To;             // --to   "Class.Method": direct find_path target
     public int MaxSteps = 25;
     public bool Summary = false;
     public bool UseLlm = true;     // --no-llm: purely deterministic find_path, no model

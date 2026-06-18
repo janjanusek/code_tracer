@@ -70,7 +70,9 @@ public class RoslynIndex
             .ToList();
     }
 
-    /// Resolves a method from "Class" + "Method". Returns the first match (notes ambiguity).
+    /// Resolves a method from "Class" + "Method". If several match (overloads, or same class
+    /// name in different namespaces), it WARNS and lists them, then uses the first - there is no
+    /// overload/namespace disambiguation, so make the class name as specific as the codebase allows.
     public async Task<IMethodSymbol?> ResolveMethod(string className, string methodName)
     {
         var decls = await FindDeclarations(methodName);
@@ -78,7 +80,32 @@ public class RoslynIndex
             .Where(m => m.ContainingType != null &&
                         string.Equals(m.ContainingType.Name, className, StringComparison.OrdinalIgnoreCase))
             .ToList();
+        WarnIfAmbiguous($"{className}.{methodName}", methods.Cast<ISymbol>().ToList());
         return methods.FirstOrDefault();
+    }
+
+    /// Resolves a property (or indexer) from "Class" + "Name". Same ambiguity handling as methods.
+    public async Task<IPropertySymbol?> ResolveProperty(string className, string propName)
+    {
+        var decls = await FindDeclarations(propName);
+        var props = decls.OfType<IPropertySymbol>()
+            .Where(p => p.ContainingType != null &&
+                        string.Equals(p.ContainingType.Name, className, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        WarnIfAmbiguous($"{className}.{propName}", props.Cast<ISymbol>().ToList());
+        return props.FirstOrDefault();
+    }
+
+    /// Surfaces ambiguity (more than one match) to stderr so the user knows which one was picked.
+    private void WarnIfAmbiguous(string what, List<ISymbol> matches)
+    {
+        if (matches.Count <= 1) return;
+        Console.Error.WriteLine($"[warn] '{what}' is ambiguous - {matches.Count} matches; using the first:");
+        foreach (var s in matches.Take(6))
+        {
+            var loc = s.Locations.FirstOrDefault(l => l.IsInSource);
+            Console.Error.WriteLine($"[warn]   {s.ToDisplayString(ShortType)}  {(loc != null ? Rel(loc) : "?")}");
+        }
     }
 
     private async Task<(SemanticModel model, SyntaxNode node)?> GetBody(IMethodSymbol method)
@@ -318,7 +345,7 @@ public class RoslynIndex
                 var loc0 = path[i].Locations.FirstOrDefault(l => l.IsInSource);
                 var where0 = loc0 != null ? Rel(loc0) : "?";
                 var arrow = i < path.Count - 1 ? "  -->" : "";
-                sb.AppendLine($"  {i + 1}. {Sig(path[i])}   {where0}{arrow}");
+                sb.AppendLine($"  {i + 1}. {Sig(path[i])}   {RepoLink(where0, repoUrl)}{arrow}");
             }
             return sb.ToString();
         }
@@ -507,12 +534,91 @@ public class RoslynIndex
     private static readonly SymbolDisplayFormat ShortType =
         SymbolDisplayFormat.MinimallyQualifiedFormat;
 
-    /// Context for a method from "Class" + "Method". depth = how deep to pull in callee bodies.
+    /// Context for a method (or property) from "Class" + "Name". depth = how deep to pull in callee bodies.
     public async Task<MethodContext?> BuildMethodContext(string className, string methodName, int depth = 0)
     {
         var m = await ResolveMethod(className, methodName);
-        if (m == null) return null;
-        return await BuildMethodContextFor(m, depth);
+        if (m != null) return await BuildMethodContextFor(m, depth);
+        // fall back to a property/indexer with that name (explains its get/set accessor bodies)
+        var p = await ResolveProperty(className, methodName);
+        if (p != null) return await BuildPropertyContext(p, depth);
+        return null;
+    }
+
+    /// Context for a property: explains its accessor bodies (get/set), reads/writes, callees, callers.
+    private async Task<MethodContext?> BuildPropertyContext(IPropertySymbol p, int depth)
+    {
+        var sref = p.DeclaringSyntaxReferences.FirstOrDefault();
+        if (sref == null) return null;
+        var node = await sref.GetSyntaxAsync();
+        var doc = _solution.GetDocument(node.SyntaxTree);
+        if (doc == null) return null;
+        var model = await doc.GetSemanticModelAsync();
+        if (model == null) return null;
+
+        var loc = p.Locations.FirstOrDefault(l => l.IsInSource);
+        var location = loc != null ? Rel(loc) : "?";
+        var type = p.ContainingType;
+
+        var reads = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        var writes = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var name in node.DescendantNodes().OfType<SimpleNameSyntax>())
+        {
+            if (model.GetSymbolInfo(name).Symbol is not { } sym) continue;
+            if (SymbolEqualityComparer.Default.Equals(sym, p)) continue;   // skip the property itself
+            if (!IsSelfMember(sym, type)) continue;
+            var expr = OutermostAccess(name);
+            var label = MemberLabel(sym);
+            if (IsWriteContext(expr, out bool alsoReads)) { writes[sym.Name] = label; if (alsoReads) reads.TryAdd(sym.Name, label); }
+            else reads[sym.Name] = label;
+        }
+
+        var callees = new List<string>();
+        var seenCallee = new HashSet<string>();
+        var calleeSymbols = new List<IMethodSymbol>();
+        foreach (var inv in node.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (model.GetSymbolInfo(inv).Symbol is not IMethodSymbol callee) continue;
+            var sig = Sig(callee);
+            if (!seenCallee.Add(sig)) continue;
+            var cloc = callee.Locations.FirstOrDefault(l => l.IsInSource);
+            callees.Add($"{sig}  - {callee.ContainingType?.Name} ({(cloc != null ? Rel(cloc) : "extern/metadata")})");
+            if (cloc != null) calleeSymbols.Add(callee);
+            if (callees.Count >= 30) break;
+        }
+
+        var src = node.ToString();
+        int bodyLines = src.Count(ch => ch == '\n') + 1;
+        var deps = depth > 0 ? await ExpandDependencies(p, calleeSymbols, depth) : new List<(string, string)>();
+
+        var callers = new List<string>();
+        if (depth > 0)
+        {
+            try
+            {
+                foreach (var c in await SymbolFinder.FindCallersAsync(p, _solution))
+                {
+                    if (c.CallingSymbol is IMethodSymbol cm) { callers.Add(Sig(cm)); if (callers.Count >= 6) break; }
+                }
+            }
+            catch { }
+        }
+
+        var accessors = (p.GetMethod != null ? "get; " : "") + (p.SetMethod != null ? "set; " : "");
+        return new MethodContext(
+            Display: $"{type?.Name}.{p.Name}",
+            Location: location,
+            Signature: $"{p.Type.ToDisplayString(ShortType)} {p.Name} {{ {accessors}}}".Trim(),
+            Source: src,
+            BodyLineCount: bodyLines,
+            Parameters: new List<string>(),
+            Reads: reads.Values.ToList(),
+            Writes: writes.Values.ToList(),
+            Callees: callees,
+            DocComment: CleanDoc(p.GetDocumentationCommentXml()),
+            Declaration: node,
+            Dependencies: deps,
+            Callers: callers);
     }
 
     /// Context for the method whose body contains the given line in the given file.
@@ -727,7 +833,7 @@ public class RoslynIndex
     /// BFS over in-solution callees up to depth `depth`. Returns truncated bodies (capped on method count
     /// and line count). Skips recursion, external symbols, and already-visited methods.
     private async Task<List<(string display, string code)>> ExpandDependencies(
-        IMethodSymbol root, List<IMethodSymbol> firstLevel, int depth)
+        ISymbol root, List<IMethodSymbol> firstLevel, int depth)
     {
         var result = new List<(string, string)>();
         var cmp = SymbolEqualityComparer.Default;

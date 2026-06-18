@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -60,6 +61,17 @@ public class LlmClient
     public ApiStyle Style => _style;
     public string Model => _model;
 
+    // Cumulative usage across the whole run (for the [perf] line).
+    public int Calls { get; private set; }
+    public long PromptTokens { get; private set; }
+    public long EvalTokens { get; private set; }
+    public long TotalTokens => PromptTokens + EvalTokens;
+
+    // Per-call breakdown: wall-clock seconds, input (prompt) tokens, output (generated) tokens.
+    public readonly record struct CallStat(double Seconds, long In, long Out, string Label);
+    private readonly List<CallStat> _callLog = new();
+    public IReadOnlyList<CallStat> CallLog => _callLog;
+
     /// Accepts anything (http://host:port, .../v1, with/without trailing slash) and returns a clean root.
     private static string NormalizeRoot(string api)
     {
@@ -70,7 +82,7 @@ public class LlmClient
     }
 
     public async Task<string> ChatAsync(IEnumerable<ChatMsg> messages, ChatOptions? options = null,
-                                        CancellationToken ct = default)
+                                        string label = "", CancellationToken ct = default)
     {
         options ??= new ChatOptions();
         var (url, json) = _style == ApiStyle.Ollama
@@ -82,8 +94,10 @@ public class LlmClient
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
 
+        var sw = Stopwatch.StartNew();
         using var resp = await _http.SendAsync(req, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
+        sw.Stop();
         if (!resp.IsSuccessStatusCode)
             throw new Exception($"LLM HTTP {(int)resp.StatusCode} ({url}): {Truncate(body, 800)}");
 
@@ -95,6 +109,23 @@ public class LlmClient
             ? root.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var c1) ? c1.GetString() : null
             : root.TryGetProperty("choices", out var ch) && ch.GetArrayLength() > 0
                 && ch[0].TryGetProperty("message", out var m2) && m2.TryGetProperty("content", out var c2) ? c2.GetString() : null;
+
+        // token usage for this call (Ollama native: *_eval_count; OpenAI: usage.*_tokens)
+        long inTok = 0, outTok = 0;
+        if (_style == ApiStyle.Ollama)
+        {
+            if (root.TryGetProperty("prompt_eval_count", out var pe) && pe.TryGetInt64(out var pv)) inTok = pv;
+            if (root.TryGetProperty("eval_count", out var ec) && ec.TryGetInt64(out var ev)) outTok = ev;
+        }
+        else if (root.TryGetProperty("usage", out var u))
+        {
+            if (u.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt64(out var pv)) inTok = pv;
+            if (u.TryGetProperty("completion_tokens", out var cc) && cc.TryGetInt64(out var cv)) outTok = cv;
+        }
+        Calls++;
+        PromptTokens += inTok;
+        EvalTokens += outTok;
+        _callLog.Add(new CallStat(sw.Elapsed.TotalSeconds, inTok, outTok, label));
 
         return content ?? "";
     }

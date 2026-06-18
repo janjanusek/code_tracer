@@ -22,6 +22,8 @@ It has **two modes**:
 
 > It does not modify code — that's the engineer's job. The tool is for **understanding** and **mapping**.
 
+**Docs:** [full manual](MANUAL.md) · [how it works](HOW_IT_WORKS.md) · [command-prep agent guide](AGENT.md)
+
 ---
 
 ## Requirements
@@ -128,8 +130,10 @@ iteratively prompting the model for corrections (1 initial + 2 correction attemp
  the correction loop, and the deterministic escalation when the model can't comply)
 ```
 
-**→ Full example in the repo:** [`examples/explain-agent-getaction.md`](examples/explain-agent-getaction.md)
-— every method explained in full, with clickable links to each source location.
+**→ Full examples in the repo:**
+[`explain-agent-getaction.md`](examples/explain-agent-getaction.md) (3 levels) ·
+[`explain-deep-runasync.md`](examples/explain-deep-runasync.md) (12 methods over 3 levels — the
+whole agent loop, each method explained, then an end-to-end synthesis).
 
 ---
 
@@ -282,6 +286,7 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--out` | explain | — | save the output to a file |
 | `-f, --target-file` | trace | — | file of the target class A |
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
+| `--from` / `--to` | trace | — | direct mode: path from `Class.Method` to `Class.Method` |
 | `--all-paths` / `--brute` | trace | off | enumerate ALL distinct paths, not just the first |
 | `--with-bodies` / `--code` | trace | off | insert each method's code (start → call to next hop) between steps; show param names + arg→param mapping |
 | `--annotate` / `--why` | trace | off | short LLM "why" note per hop (depth-aware); implies `--with-bodies` |

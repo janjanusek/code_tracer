@@ -213,6 +213,16 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         await Finish(_lastPath ?? deterministic, "limit");
     }
 
+    /// Direct mode (--from/--to): find_path between two concrete methods, with the same
+    /// rendering options (with-bodies / annotate) and final --summary as the normal trace.
+    public async Task RunDirectAsync(string fromClass, string fromMethod, string toClass, string toMethod)
+    {
+        Console.WriteLine($"[direct] find_path {fromClass}.{fromMethod} -> {toClass}.{toMethod}");
+        var res = await _index.FindPath(fromClass, fromMethod, toClass, toMethod,
+            maxNodes: 20000, withBodies: _withBodies, repoUrl: _repoUrl, annotate: Annotator());
+        await Finish(res, "direct");
+    }
+
     // ---- action selection: token-level enforced JSON + validation + retry ---------
 
     /// Requests one action from the model as grammar-constrained JSON. The grammar guarantees
@@ -224,7 +234,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
 
         for (int attempt = 0; attempt < 3; attempt++)   // 1 attempt + 2 corrections
         {
-            var raw = (await _llm.ChatAsync(messages, opts)).Trim();
+            var raw = (await _llm.ChatAsync(messages, opts, "action")).Trim();
 
             // the grammar should guarantee valid JSON; on interruption (num_predict) it may
             // return unclosed JSON - handle that.
@@ -348,7 +358,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             {
                 new ChatMsg("system", "You summarize a code call-chain for a developer. Concise, factual, plain English."),
                 new ChatMsg("user", prompt)
-            }, new ChatOptions { Temperature = 0.2, NumPredict = 2048 })).Trim();
+            }, new ChatOptions { Temperature = 0.2, NumPredict = 2048 }, "summary")).Trim();
         }
         catch (Exception ex) { return $"_(summary unavailable: {ex.Message})_"; }
     }
@@ -450,9 +460,10 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             if (!res.Contains("PATH FOUND")) continue;
             if (!seen.Add(res)) continue;       // dedup identical paths
             found++;
+            if (found > 1) { sb.AppendLine(); sb.AppendLine("---"); }   // clear separator between paths
+            sb.AppendLine();
             sb.AppendLine($"### Path {found}:  {p.fc}.{p.fm}  ->  {p.tc}.{p.tm}");
             sb.AppendLine(res.Trim());
-            sb.AppendLine();
         }
         if (found == 0)
         {
@@ -496,7 +507,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
                 {
                     new ChatMsg("system", "You annotate one step of a code call-chain in a single terse phrase. No markdown, no quotes."),
                     new ChatMsg("user", prompt)
-                }, new ChatOptions { Temperature = 0.2, NumPredict = 64 })).Trim();
+                }, new ChatOptions { Temperature = 0.2, NumPredict = 64 }, "annotate")).Trim();
                 if (reply.Length == 0 || reply.Equals("null", StringComparison.OrdinalIgnoreCase)) return null;
                 return reply.Trim('"', '`', ' ', '.');
             }
