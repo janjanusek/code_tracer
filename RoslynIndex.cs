@@ -247,7 +247,8 @@ public class RoslynIndex
     /// nenarazime na zdroj. Toto je najspolahlivejsia operacia - LLM ju len
     /// vola s vysledkom find_symbol/outline a potom interpretuje vystup.
     /// </summary>
-    public async Task<string> FindPath(string fromClass, string fromMethod, string toClass, string toMethod)
+    public async Task<string> FindPath(string fromClass, string fromMethod, string toClass, string toMethod,
+                                       int maxNodes = 3000)
     {
         var start = await ResolveMethod(fromClass, fromMethod);
         var target = await ResolveMethod(toClass, toMethod);
@@ -262,7 +263,6 @@ public class RoslynIndex
         var calledBy = new Dictionary<ISymbol, IMethodSymbol>(cmp); // caller -> co volal (smerom k cielu)
 
         queue.Enqueue(target);
-        const int maxNodes = 3000;
         int explored = 0;
 
         while (queue.Count > 0 && explored < maxNodes)
@@ -345,6 +345,13 @@ public class RoslynIndex
     /// Kontext metody, ktorej telo obsahuje dany riadok v danom subore.
     public async Task<MethodContext?> BuildMethodContextByLocation(string filePath, int line, int depth = 0)
     {
+        var sym = await ResolveByLocation(filePath, line);
+        return sym == null ? null : await BuildMethodContextFor(sym, depth);
+    }
+
+    /// Najde IMethodSymbol metody, ktorej telo obsahuje dany riadok (najtesnejsia).
+    private async Task<IMethodSymbol?> ResolveByLocation(string filePath, int line)
+    {
         var full = Path.IsPathRooted(filePath) ? filePath : Path.Combine(SolutionDir, filePath);
         var doc = _solution.Projects.SelectMany(p => p.Documents)
             .FirstOrDefault(d => string.Equals(Path.GetFullPath(d.FilePath ?? ""),
@@ -354,7 +361,6 @@ public class RoslynIndex
         var root = await doc.GetSyntaxRootAsync();
         if (root == null) return null;
 
-        // najtesnejsia metoda obsahujuca dany riadok
         var decl = root.DescendantNodes().OfType<BaseMethodDeclarationSyntax>()
             .Where(d =>
             {
@@ -370,8 +376,79 @@ public class RoslynIndex
         if (decl == null) return null;
 
         var model = await doc.GetSemanticModelAsync();
-        if (model?.GetDeclaredSymbol(decl) is not IMethodSymbol sym) return null;
-        return await BuildMethodContextFor(sym, depth);
+        return model?.GetDeclaredSymbol(decl) as IMethodSymbol;
+    }
+
+    // ====================================================================
+    //  deep explain: cela logika po call-chain. Namiesto nahltania N skratenych
+    //  tiel do JEDNEHO plytkeho callu prejde retazec metod (BFS po in-solution
+    //  callees do hlbky `depth`, cap `maxMethods`) a kazdu vysvetli SAMOSTATNE.
+    // ====================================================================
+
+    /// In-solution metody (so zdrojakom), ktore dana metoda vola. Deduplikovane.
+    private async Task<List<IMethodSymbol>> InSolutionCallees(IMethodSymbol m)
+    {
+        var result = new List<IMethodSymbol>();
+        var body = await GetBody(m);
+        if (body == null) return result;
+        var (model, node) = body.Value;
+        SyntaxNode scanRoot = node is BaseMethodDeclarationSyntax d
+            ? ((SyntaxNode?)d.Body ?? (SyntaxNode?)d.ExpressionBody ?? d) : node;
+
+        var seen = new HashSet<string>();
+        foreach (var inv in scanRoot.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (model.GetSymbolInfo(inv).Symbol is not IMethodSymbol callee) continue;
+            if (!callee.Locations.Any(l => l.IsInSource)) continue;     // preskoc framework/extern
+            if (seen.Add(Sig(callee))) result.Add(callee);
+        }
+        return result;
+    }
+
+    /// Vrati retazec metod (root + in-solution callees do hlbky `depth`, cap `maxMethods`),
+    /// kazdu ako samostatny depth-0 kontext. Poradie BFS (root prvy). null = root nenajdeny.
+    public async Task<List<(int level, MethodContext ctx)>?> BuildExplainChain(
+        string className, string methodName, int depth, int maxMethods)
+    {
+        var root = await ResolveMethod(className, methodName);
+        return root == null ? null : await BuildExplainChainFor(root, depth, maxMethods);
+    }
+
+    public async Task<List<(int level, MethodContext ctx)>?> BuildExplainChainByLocation(
+        string filePath, int line, int depth, int maxMethods)
+    {
+        var root = await ResolveByLocation(filePath, line);
+        return root == null ? null : await BuildExplainChainFor(root, depth, maxMethods);
+    }
+
+    private async Task<List<(int level, MethodContext ctx)>> BuildExplainChainFor(
+        IMethodSymbol root, int depth, int maxMethods)
+    {
+        var cmp = SymbolEqualityComparer.Default;
+        var visited = new HashSet<ISymbol>(cmp) { root };
+        var order = new List<(IMethodSymbol sym, int lvl)>();
+        var queue = new Queue<(IMethodSymbol sym, int lvl)>();
+        queue.Enqueue((root, 0));
+
+        while (queue.Count > 0 && order.Count < maxMethods)
+        {
+            var (sym, lvl) = queue.Dequeue();
+            order.Add((sym, lvl));
+            if (lvl >= depth) continue;
+            foreach (var c in await InSolutionCallees(sym))
+                if (visited.Add(c)) queue.Enqueue((c, lvl + 1));
+        }
+        if (queue.Count > 0)
+            Console.Error.WriteLine($"[explain] call chain capped at {maxMethods} methods " +
+                                    "- raise --max-methods to go wider/deeper.");
+
+        var result = new List<(int, MethodContext)>();
+        foreach (var (sym, lvl) in order)
+        {
+            var ctx = await BuildMethodContextFor(sym, 0);
+            if (ctx != null) result.Add((lvl, ctx));
+        }
+        return result;
     }
 
     private async Task<MethodContext?> BuildMethodContextFor(IMethodSymbol m, int depth = 0)

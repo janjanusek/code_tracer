@@ -36,7 +36,7 @@ static async Task<int> RunTrace(Options opts)
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
 
-    var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm);
+    var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths);
     await agent.RunAsync(opts.Solution!, opts.TargetFile!, opts.Endpoint!);
     return 0;
 }
@@ -58,7 +58,8 @@ static async Task<int> RunExplain(Options opts)
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
 
-    MethodContext? ctx;
+    // rozlis ciel: --method "Class.Method" alebo --file + --line
+    string? cls = null, method = null;
     if (!string.IsNullOrWhiteSpace(opts.Method))
     {
         var parts = opts.Method!.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -67,33 +68,51 @@ static async Task<int> RunExplain(Options opts)
             Console.Error.WriteLine("[error] --method expects the format \"Class.Method\".");
             return 1;
         }
-        var method = parts[^1];
-        var cls = parts[^2];
-        Console.Error.WriteLine($"[explain] looking for {cls}.{method} (depth={opts.Depth}) ...");
-        ctx = await index.BuildMethodContext(cls, method, opts.Depth);
+        method = parts[^1];
+        cls = parts[^2];
     }
-    else
+    else if (opts.Line <= 0)
     {
-        if (opts.Line <= 0)
-        {
-            Console.Error.WriteLine("[error] with --file you must also pass --line <N>.");
-            return 1;
-        }
-        Console.Error.WriteLine($"[explain] looking for the method at {opts.File}:{opts.Line} (depth={opts.Depth}) ...");
-        ctx = await index.BuildMethodContextByLocation(opts.File!, opts.Line, opts.Depth);
-    }
-
-    if (ctx == null)
-    {
-        Console.Error.WriteLine("[error] method not found or has no source available (possibly from metadata).");
+        Console.Error.WriteLine("[error] with --file you must also pass --line <N>.");
         return 1;
     }
 
-    Console.Error.WriteLine($"[explain] {ctx.Display}  {ctx.Location}  (~{ctx.BodyLineCount} body lines, " +
-                            $"{ctx.Callees.Count} callees, {ctx.Dependencies.Count} pulled-in dependencies)");
-
     var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2);
-    var text = await explainer.ExplainAsync(ctx, opts.Goal, opts.Question);
+    string text;
+
+    if (opts.Depth <= 0)
+    {
+        // jedna metoda - najrychlejsie (jeden call)
+        var where = cls != null ? $"{cls}.{method}" : $"{opts.File}:{opts.Line}";
+        Console.Error.WriteLine($"[explain] looking for {where} (depth=0) ...");
+        var ctx = cls != null
+            ? await index.BuildMethodContext(cls, method!, 0)
+            : await index.BuildMethodContextByLocation(opts.File!, opts.Line, 0);
+        if (ctx == null)
+        {
+            Console.Error.WriteLine("[error] method not found or has no source available (possibly from metadata).");
+            return 1;
+        }
+        Console.Error.WriteLine($"[explain] {ctx.Display}  {ctx.Location}  (~{ctx.BodyLineCount} body lines, " +
+                                $"{ctx.Callees.Count} callees)");
+        text = await explainer.ExplainAsync(ctx, opts.Goal, opts.Question);
+    }
+    else
+    {
+        // deep: vysvetli CELU logiku po call-chain (kazda metoda samostatne + synteza)
+        Console.Error.WriteLine($"[explain] building call chain (depth={opts.Depth}, max-methods={opts.MaxMethods}) ...");
+        var chain = cls != null
+            ? await index.BuildExplainChain(cls, method!, opts.Depth, opts.MaxMethods)
+            : await index.BuildExplainChainByLocation(opts.File!, opts.Line, opts.Depth, opts.MaxMethods);
+        if (chain == null || chain.Count == 0)
+        {
+            Console.Error.WriteLine("[error] method not found or has no source available (possibly from metadata).");
+            return 1;
+        }
+        Console.Error.WriteLine($"[explain] chain has {chain.Count} methods - explaining each + end-to-end synthesis " +
+                                $"({chain.Count + 1} model calls) ...");
+        text = await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question);
+    }
 
     Console.WriteLine();
     Console.WriteLine(text.Trim());
@@ -161,10 +180,12 @@ static Options ParseArgs(string[] args)
             case "--file":                    o.File = Next(); break;
             case "--line":                    if (int.TryParse(Next(), out var ln)) o.Line = ln; break;
             case "--depth":                   if (int.TryParse(Next(), out var dp)) o.Depth = dp; break;
+            case "--max-methods":             if (int.TryParse(Next(), out var mm)) o.MaxMethods = mm; break;
             case "--question": case "--ask":  o.Question = Next(); break;
             case "--goal":                    o.Goal = Next(); break;
             case "--out":                     o.Out = Next(); break;
             case "--no-llm":                  o.UseLlm = false; break;
+            case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
             case "-m": case "--model":        o.Model = Next(); break;
             case "-a": case "--api":          o.Api = Next(); break;
             case "--api-style":               o.ApiStyle = Next().Equals("openai", StringComparison.OrdinalIgnoreCase)
@@ -198,16 +219,21 @@ TRACE options:
   -s, --solution      path to the .sln
   -f, --target-file   path to the file of class A (where the call we look for lives)
   -e, --endpoint      starting point B (route or Class.Method)
-      --max-steps     agent step limit (default 25)
+      --all-paths     (--brute / --deep) enumerate ALL distinct paths, not just the first.
+                      For non-trivial code where one shortest path isn't enough.
       --no-llm        deterministic only: run find_path over candidate pairs, no model
                       (fastest + fully reliable when the endpoint resolves to a file)
+      --max-steps     agent step limit (default 25)
       --summary       append a short free-text summary of the path at the end
 
 EXPLAIN options:
       --method        "Class.Method" - which method to explain
       --file + --line alternative: file and a line inside the method
-      --depth         how deep to pull in bodies of called methods (default 1; 0 = method only).
-                      Higher depth = "how it fits together" + shows callers; more CPU/context.
+      --depth         how deep to follow the CALL CHAIN (default 1; 0 = the method alone).
+                      Each method in the chain is explained on its own, then an end-to-end
+                      synthesis ties it together. Higher = deeper logic, more model calls.
+      --max-methods   cap on methods explained in the chain (default 8). RAISE THIS to go
+                      wider/deeper on non-trivial code (each method = one model call).
       --question      (--ask) a specific question to focus the explanation on
       --goal          (optional) "what to change" - adds a change proposal with a code sample.
                       Not needed for plain code understanding.
@@ -218,25 +244,25 @@ SHARED options:
   -a, --api           server base URL (default: http://localhost:11434)
                       LM Studio: http://localhost:1234  (add --api-style openai)
       --api-style     ollama (default) | openai
-      --num-ctx       context window size (default 8192; with 32 GB RAM and 7B, 8-16K is safe)
-      --num-predict   token cap for explain (default 2048)
+      --num-ctx       context window size (default 16384; with 32 GB RAM and 7B, 8-16K is safe)
+      --num-predict   token cap for explain output (default 4096)
       --temperature   default 0 (decisions) / 0.2 (explain)
 
 EXAMPLES:
-  # "tax is computed here - explain it and pull in the dependencies, how it fits together"
-  codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 1
+  # explain the WHOLE logic deeply - follow the call chain down and explain every layer
+  codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --max-methods 15
 
   # point at code and ask a specific question
   codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --ask "where does the VAT rate come from?"
 
-  # whole call chain from an endpoint to a target class (direction doesn't matter - prints the full path)
-  codetracer trace -s ./Big.sln -f ./Pricing/PricingEngine.cs -e "POST /orders"
+  # brute-force trace: ALL paths from an endpoint to the target class (non-trivial code)
+  codetracer trace -s ./Big.sln -f ./Pricing/PricingEngine.cs -e "POST /orders" --all-paths --no-llm
 
-  # fastest, fully deterministic path (no model round-trips)
+  # fastest single deterministic path (no model round-trips)
   codetracer trace -s ./Big.sln -f ./Pricing/PricingEngine.cs -e "POST /orders" --no-llm
 
   # save the explanation to .md
-  codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --out tax.md
+  codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --out tax.md
 """);
 }
 
@@ -251,12 +277,14 @@ class Options
     public int MaxSteps = 25;
     public bool Summary = false;
     public bool UseLlm = true;     // --no-llm: cisto deterministicky find_path, bez modelu
+    public bool AllPaths = false;  // --all-paths/--brute: enumeruj VSETKY cesty, nie len prvu
 
     // explain
     public string? Method;
     public string? File;
     public int Line = 0;
-    public int Depth = 1;          // default: natiahni priame zavislosti (callees) -> "ako to spolu hra"
+    public int Depth = 1;          // hlbka call-chain pre deep explain (0 = len metoda)
+    public int MaxMethods = 8;     // strop poctu metod v deep-explain retazci
     public string? Question;       // --question/--ask: konkretna otazka, na ktoru sa ma sustredit
     public string? Goal;
     public string? Out;
@@ -265,7 +293,7 @@ class Options
     public string Model = "gemma4:latest";
     public string Api = "http://localhost:11434";
     public ApiStyle ApiStyle = ApiStyle.Ollama;
-    public int NumCtx = 8192;
-    public int NumPredict = 2048;
+    public int NumCtx = 16384;
+    public int NumPredict = 4096;
     public double? Temperature = null;
 }

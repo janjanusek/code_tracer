@@ -48,7 +48,7 @@ public class LlmClient
     private readonly ApiStyle _style;
     private readonly int _defaultNumCtx;
 
-    public LlmClient(string api, string model, ApiStyle style = ApiStyle.Ollama, int defaultNumCtx = 8192)
+    public LlmClient(string api, string model, ApiStyle style = ApiStyle.Ollama, int defaultNumCtx = 16384)
     {
         _root = NormalizeRoot(api);
         _model = model;

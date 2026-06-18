@@ -43,7 +43,7 @@ Roslyn result. That's the whole architecture in one sentence.
 | `RoslynIndex.cs` | all Roslyn analysis: symbols, callers, callees, `find_path`, `BuildMethodContext` |
 | `LlmClient.cs` | HTTP to Ollama `/api/chat` (structured outputs) or an OpenAI-compatible server |
 | `Agent.cs` | trace mode: deterministic pre-flight, the model loop, JSON enforcement, escalation |
-| `Explainer.cs` | explain mode: turns a method context into prompts, one unconstrained model call |
+| `Explainer.cs` | explain mode: per-method prompts, deep call-chain walk + end-to-end synthesis |
 
 Startup detail: `MSBuildLocator.RegisterDefaults()` must run **before** any Roslyn/MSBuild
 type is touched, so all real work lives in methods, not inline in `Program.cs`.
@@ -65,17 +65,22 @@ type is touched, so all real work lives in methods, not inline in `Program.cs`.
 - **fields/properties read vs. written** (it walks the body, classifies each member access
   as a write if it's the left side of an assignment, `ref`/`out` arg, or `++`/`--`),
 - **callees** — methods it calls, with signature + where they're declared,
-- the **doc comment**, if any,
-- at **`--depth ≥ 1`**: truncated **bodies of called methods** within the solution (BFS,
-  hard-capped at 8 methods × 40 lines) and the method's **callers** ("REACHED FROM").
+- the **doc comment**, if any.
 
-This is why a 5000-line class is no problem: the model sees one method plus a tight
-neighbourhood, never the file.
+This is why a 5000-line class is no problem: the model sees one method, never the file.
 
-### 2. The model explains it — one unconstrained call
-`Explainer` builds a prompt (context header + source + dependencies + task) and makes a
-single call with **no grammar** (`format` = null) — explanation is free text, the model's
-strength. Knobs: `--num-predict` (token cap, default 2048), `--temperature` (default 0.2).
+### 2. The model explains it
+- **`--depth 0`** → one unconstrained call (`format` = null), free text. Fast.
+- **`--depth N ≥ 1`** → **deep, layer by layer**. Roslyn walks the **call chain** from the
+  entry method down through its in-solution callees (BFS to depth `N`, capped by
+  `--max-methods`, default 8). **Each method is explained in its own call** with its full
+  body (not a truncated snippet), then a final **end-to-end synthesis** describes how it all
+  flows together. So `N+1` model calls — deeper depth/`--max-methods` = more thorough on
+  non-trivial code. This is the fix for "depth went shallow": depth now drives a real
+  per-method walk, not one summarising pass.
+
+Knobs: `--num-predict` (output cap, default 4096; chain nodes get a smaller per-node budget,
+the synthesis gets the full cap), `--temperature` (default 0.2).
 
 ### 3. Special cases
 - **`--question "…"`** is placed *first* in the task, so it's answered even if the output is
@@ -110,6 +115,11 @@ Before involving the model, trace runs `find_path` over those pairs. `find_path`
 upward over callers** in Roslyn (`SymbolFinder.FindCallersAsync`) from the target until it
 reaches the source — an exact shortest path. If a pair connects (the common case), the path
 is printed with **zero model calls**. `--no-llm` stops here regardless.
+
+**Brute force (`--all-paths` / `--brute` / `--deep`)**: instead of returning the first
+connecting pair, it runs `find_path` over **every** candidate pair (with a wider graph
+budget, 20000 nodes) and prints **all distinct paths**. For non-trivial code where one
+shortest path isn't the whole picture.
 
 ### 3. The model loop — only for the hard cases
 If no pair connects (calls through interface/DI/reflection/events that BFS-over-callers can't
@@ -156,21 +166,24 @@ This is why the model "driving badly" is fine — Roslyn delivers the path eithe
 
 | knob | default | effect |
 |---|---|---|
-| `--num-ctx` | 8192 | context window. 8–16K is safe with 32 GB RAM + 7B; higher risks OOM |
-| `--num-predict` | 2048 | explain output cap. Action selection uses a fixed small cap (512) |
+| `--num-ctx` | 16384 | context window. 8–16K is safe with 32 GB RAM + 7B; higher risks OOM |
+| `--num-predict` | 4096 | explain output cap. Action selection uses a fixed small cap (512) |
 | `--temperature` | 0 / 0.2 | **0** for decisions/structure (deterministic); 0.2 for explanation prose |
-| `--depth` | 1 | explain neighbourhood depth; `0` = fastest, just the method |
+| `--depth` | 1 | explain call-chain depth; `0` = fastest (just the method), higher = deeper logic |
+| `--max-methods` | 8 | cap on methods explained in the chain — raise to go deeper/wider |
+| `--all-paths` | off | trace: enumerate ALL paths (brute force), not just the first |
 | `--no-llm` | off | trace without the model — fastest, fully deterministic |
 | `-m, --model` | gemma4:latest | swap models; smaller ones are faster but may fill the trace schema worse |
 
-Everything is hard-capped (tool outputs truncated, dependency expansion ≤ 8 methods × 40
-lines, BFS ≤ 3000 nodes) so a giant spaghetti codebase can't blow up context or memory.
+Everything is bounded (tool outputs truncated, explain chain ≤ `--max-methods`, BFS node
+budget capped) so a giant spaghetti codebase can't blow up context or memory.
 
 ---
 
 ## End-to-end, in one breath
 
-`explain`: Roslyn carves out one method + its neighbourhood → the model explains it in one
-call. `trace`: Roslyn bootstraps candidate pairs → a deterministic BFS finds the exact path
-(usually with no model at all) → the model only helps navigate the cases pure call-graph BFS
-can't reach, and even then a deterministic result backs it up.
+`explain`: Roslyn carves out the entry method and walks the call chain down → each method is
+explained on its own, then synthesised into the end-to-end logic. `trace`: Roslyn bootstraps
+candidate pairs → a deterministic BFS finds the exact path(s) (usually with no model at all;
+`--all-paths` enumerates every one) → the model only helps navigate the cases pure call-graph
+BFS can't reach, and even then a deterministic result backs it up.

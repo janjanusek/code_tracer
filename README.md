@@ -22,7 +22,9 @@ It has **two modes**:
 
 ## Requirements
 
-1. **.NET 10 SDK** — `dotnet --version`
+1. **.NET 8 SDK or newer** — `dotnet --version`. The project targets **`net8.0`**, so it builds
+   on a .NET 8 SDK (e.g. a VDI) *and* a .NET 10 SDK. `RollForward=Major` lets the net8 binary
+   run on a newer runtime if no .NET 8 runtime is installed.
 2. **Ollama ≥ 0.5** (structured outputs) — `ollama --version`
 3. Model: `ollama pull gemma4:latest`
 
@@ -56,36 +58,35 @@ the `.../v1` form — it gets normalized. For **LM Studio**, add `--api-style op
 ## `explain` mode — understanding code (the main value)
 
 ```bash
-# "tax is calculated here - explain it and pull in the dependencies"
-dotnet run -- explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 1
+# explain the WHOLE logic deeply - follow the call chain down and explain every layer
+dotnet run -- explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --max-methods 15
 
 # alternatively by file + line (any line inside the method works)
-dotnet run -- explain -s ./Big.sln --file ./Tax/TaxEngine.cs --line 1234 --depth 1
+dotnet run -- explain -s ./Big.sln --file ./Tax/TaxEngine.cs --line 1234 --depth 3
+
+# just this method, fast (one call)
+dotnet run -- explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 0
 
 # save the explanation to a .md file
-dotnet run -- explain -s ./Big.sln --method "TaxEngine.Calculate" --out tax.md
+dotnet run -- explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --out tax.md
 ```
 
 ### How it works (and why it handles even a 5000-line class)
 Roslyn extracts **only** the target method + relevant context — the model **never receives
-the whole file**:
-- method signature + full body
-- parameters and their types
-- fields/properties the method **reads** / **writes**
-- list of **called methods** (callees) with signature and origin
-- doc comment, if present
-- **`--depth N`**: additionally pulls in **truncated bodies of called methods** within the
-  solution (BFS to depth N, hard-capped at 8 methods × 40 lines) — so the model can explain
-  *how the method and its dependencies fit together*. Default is `--depth 1`; `--depth 0`
-  = the method alone (fastest). At `--depth ≥ 1` it also lists the method's **callers**
-  ("REACHED FROM"), answering *how is this reached*.
+the whole file**. Per method it provides: signature + full body, parameters and types,
+fields/properties **read** / **written**, **called methods** (callees) with origin, and the
+doc comment.
+
+**`--depth N` follows the call chain and explains the whole logic** — not one shallow pass.
+Roslyn walks from the entry method down through its in-solution callees (BFS to depth `N`,
+capped by `--max-methods`, default 8) and **each method is explained on its own** (its full
+body, full attention), then a final **end-to-end synthesis** ties the layers together. So on
+non-trivial code you get real depth, layer by layer. `--depth 0` = just the method, one fast
+call. To go deeper/wider on spaghetti, **raise `--max-methods`** (each method = one model call).
 
 Add **`--question "…"`** (alias `--ask`) to point at the code and ask something specific —
-it's answered first, before the general walkthrough.
-
-The explanation is produced in a **single unconstrained call** (the model's strength =
-explaining code it is handed). If the method is extremely long (> 400 lines) it is split
-into **logical blocks**, explained block by block, with a final summary.
+it's answered first, before the general walkthrough. If a single method is extremely long
+(> 400 lines) it's split into **logical blocks**, explained block by block, with a summary.
 
 `--goal "..."` (optional) adds a change proposal with a code snippet — done as a **separate
 call** so a verbose explanation doesn't eat its token budget. Not needed for plain understanding.
@@ -109,6 +110,11 @@ candidate pairs immediately. If they connect (the common case), it prints the pa
 model calls at all** — fast and fully reliable on CPU. Only when the pairs don't connect does
 it hand over to the model loop (for interface/DI/reflection cases that need navigation). Use
 **`--no-llm`** to skip the model entirely and stay purely deterministic.
+
+For non-trivial code where one shortest path isn't enough, **`--all-paths`** (aliases
+`--brute` / `--deep`) brute-forces **every** candidate pair and prints **all distinct paths**
+(with a wider graph budget), not just the first. Combine with `--no-llm` for a fast, complete,
+deterministic map.
 
 ### Token-level JSON enforcement (why a small model can't "break" the format)
 The model's action selection uses **Ollama structured outputs**: the request carries a
@@ -140,20 +146,22 @@ Agent tools: `find_path`, `find_callers`, `find_callees`, `get_method`, `find_sy
 | `-s, --solution` | both | — | path to the `.sln` (required) |
 | `--method` | explain | — | `"Class.Method"` to explain |
 | `--file` + `--line` | explain | — | alternative to `--method` |
-| `--depth` | explain | `1` | depth of pulled-in dependency bodies (0 = method only; ≥1 also shows callers) |
+| `--depth` | explain | `1` | how deep to follow the call chain; each method explained + end-to-end synthesis (0 = method only) |
+| `--max-methods` | explain | `8` | cap on methods explained in the chain — raise for deeper/wider coverage |
 | `--question` / `--ask` | explain | — | a specific question to focus the explanation on (answered first) |
 | `--goal` | explain | — | (optional) change proposal with a code snippet |
 | `--out` | explain | — | save the output to a file |
 | `-f, --target-file` | trace | — | file of the target class A |
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
-| `--max-steps` | trace | `25` | agent step limit |
+| `--all-paths` / `--brute` | trace | off | enumerate ALL distinct paths, not just the first |
 | `--no-llm` | trace | off | deterministic only — `find_path` over candidate pairs, no model |
+| `--max-steps` | trace | `25` | agent step limit |
 | `--summary` | trace | off | short free-text summary of the path at the end |
 | `-m, --model` | both | `gemma4:latest` | model name |
 | `-a, --api` | both | `http://localhost:11434` | server base URL |
 | `--api-style` | both | `ollama` | `ollama` \| `openai` (LM Studio) |
-| `--num-ctx` | both | `8192` | context window size |
-| `--num-predict` | both | `2048` | token cap for explain |
+| `--num-ctx` | both | `16384` | context window size |
+| `--num-predict` | both | `4096` | token cap for explain output |
 | `--temperature` | both | `0` / `0.2` | 0 for decisions, 0.2 for explain |
 
 ---

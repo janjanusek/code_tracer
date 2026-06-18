@@ -10,6 +10,7 @@ public class Agent
     private readonly int _maxSteps;
     private readonly bool _summarize;
     private readonly bool _useLlm;
+    private readonly bool _allPaths;
     private readonly int _actionNumPredict;
 
     // Deterministicky predpripravene kandidatske dvojice pre find_path.
@@ -19,13 +20,15 @@ public class Agent
     private string? _lastPath;
 
     public Agent(LlmClient llm, RoslynIndex index, int maxSteps = 25,
-                 bool summarize = false, bool useLlm = true, int actionNumPredict = 512)
+                 bool summarize = false, bool useLlm = true, bool allPaths = false,
+                 int actionNumPredict = 512)
     {
         _llm = llm;
         _index = index;
         _maxSteps = maxSteps;
         _summarize = summarize;
         _useLlm = useLlm;
+        _allPaths = allPaths;
         _actionNumPredict = actionNumPredict;
     }
 
@@ -110,11 +113,13 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         // Deterministicky pre-flight: skus kandidatske find_path dvojice HNED. Na CPU je to
         // rychlejsie a spolahlivejsie nez cakat na (casto podvyplnene) volania modelu. Roslyn
         // je zdroj pravdy; model je tu len na navigaciu tazsich pripadov (interface/DI/eventy).
-        Console.WriteLine($"[pre-flight] deterministic find_path over {_pairs.Count} candidate pairs...");
-        var deterministic = await TryAutoPath();
+        // --all-paths/--brute: enumeruj VSETKY cesty (deep), nie len prvu najkratsiu.
+        var mode = _allPaths ? "brute-force (all paths)" : "first path";
+        Console.WriteLine($"[pre-flight] deterministic find_path over {_pairs.Count} candidate pairs [{mode}]...");
+        var deterministic = _allPaths ? await TryAllPaths() : await TryAutoPath();
         if (deterministic.Contains("PATH FOUND"))
         {
-            await Finish(deterministic, "pre-flight");
+            await Finish(deterministic, _allPaths ? "brute-force" : "pre-flight");
             return;
         }
         if (!_useLlm)
@@ -392,6 +397,37 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             sb.AppendLine(await _index.FindCallers(t.tc, t.tm));
         }
         return sb.ToString();
+    }
+
+    /// Brute-force (--all-paths): prejde VSETKY kandidatske dvojice a vrati VSETKY distinct
+    /// najdene cesty. Pre netrivialny kod, kde existuje viac ciest a prva/najkratsia nestaci.
+    private async Task<string> TryAllPaths()
+    {
+        var sb = new StringBuilder();
+        var seen = new HashSet<string>();
+        int found = 0;
+        foreach (var p in _pairs)
+        {
+            var res = await _index.FindPath(p.fc, p.fm, p.tc, p.tm, maxNodes: 20000);
+            if (!res.Contains("PATH FOUND")) continue;
+            if (!seen.Add(res)) continue;       // dedup identicke cesty
+            found++;
+            sb.AppendLine($"### Path {found}:  {p.fc}.{p.fm}  ->  {p.tc}.{p.tm}");
+            sb.AppendLine(res.Trim());
+            sb.AppendLine();
+        }
+        if (found == 0)
+        {
+            var fb = new StringBuilder("No direct path found over candidate pairs. " +
+                                       "Callers of the target methods (going up):\n");
+            foreach (var t in _pairs.Select(p => (p.tc, p.tm)).Distinct().Take(3))
+            {
+                fb.AppendLine($"\n# {t.tc}.{t.tm}");
+                fb.AppendLine(await _index.FindCallers(t.tc, t.tm));
+            }
+            return fb.ToString();
+        }
+        return $"FOUND {found} distinct path(s) [brute-force]:\n\n" + sb.ToString();
     }
 
     // ---- dispatch ----------------------------------------------------------

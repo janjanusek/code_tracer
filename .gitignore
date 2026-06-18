@@ -1,0 +1,35 @@
+# ---- .NET build output ----
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.dll
+*.exe
+*.pdb
+
+# ---- generated / restore artifacts ----
+project.assets.json
+*.nuget.props
+*.nuget.targets
+*.AssemblyInfo.cs
+*.GlobalUsings.g.cs
+*.assemblyattributes.cs
+.AssemblyAttributes.cs
+
+# ---- IDE / editor ----
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ---- OS junk ----
+Thumbs.db
+.DS_Store
+
+# ---- generated explanation dumps (explain --out) ----
+# Keep the docs (README.md, AGENT.md, HOW_IT_WORKS.md); ignore ad-hoc outputs:
+explain_*.md
+*.explain.md

@@ -187,7 +187,7 @@ public class Explainer
         return sb.ToString();
     }
 
-    private async Task<string> Ask(string userContent)
+    private async Task<string> Ask(string userContent, int? numPredict = null)
     {
         var msgs = new[]
         {
@@ -197,9 +197,79 @@ public class Explainer
         return await _llm.ChatAsync(msgs, new ChatOptions
         {
             Temperature = _temperature,
-            NumPredict = _numPredict,
+            NumPredict = numPredict ?? _numPredict,
             // Format zamerne null - explain je volny text (sila modelu), ziadna gramatika.
         });
+    }
+
+    /// Deep explain: vysvetli CELU logiku po call-chain. Kazdu metodu retazca vysvetli
+    /// SAMOSTATNYM callom (plna pozornost, nie skrateny snippet), potom synteza end-to-end.
+    public async Task<string> ExplainChainAsync(
+        IReadOnlyList<(int level, MethodContext ctx)> chain, string? goal, string? question)
+    {
+        var root = chain[0].ctx;
+        var sb = new StringBuilder();
+        sb.AppendLine($"# {root.Display}  ({root.Location})");
+        sb.AppendLine($"`{root.Signature}`");
+        if (!string.IsNullOrWhiteSpace(question))
+            sb.AppendLine($"> **Question:** {question!.Trim()}");
+        sb.AppendLine($"_Deep explanation following the call chain ({chain.Count} methods)._");
+        sb.AppendLine();
+
+        // Kazdy uzol kratsi (focus na svoju metodu); synteza dostane plny budget.
+        int nodeBudget = Math.Min(_numPredict, 1100);
+        var notes = new List<string>();
+        int i = 0;
+        foreach (var (level, ctx) in chain)
+        {
+            i++;
+            Console.Error.WriteLine($"[explain] ({i}/{chain.Count}) L{level}  {ctx.Display} ...");
+            var part = await Ask(BuildNodePrompt(ctx), nodeBudget);
+            sb.AppendLine($"## L{level} · {ctx.Display}  ({ctx.Location})");
+            sb.AppendLine(part.Trim());
+            sb.AppendLine();
+            notes.Add($"L{level} {ctx.Display}: {Shorten(part, 500)}");
+        }
+
+        // synteza: ako to spolu hra od vstupu po vystup
+        Console.Error.WriteLine("[explain] synthesizing end-to-end logic ...");
+        var synth = new StringBuilder();
+        synth.AppendLine($"Entry method: {root.Display}  ({root.Signature}).");
+        synth.AppendLine("Per-method explanations of the call chain (entry first):");
+        foreach (var n in notes) synth.AppendLine($"- {n}");
+        synth.AppendLine();
+        synth.AppendLine("Now describe the COMPLETE END-TO-END logic: how execution flows from the entry " +
+                         "method down through these methods, where the real work happens, the key branches/" +
+                         "decisions, what data gets transformed, and the final outcome. Be concrete.");
+        if (!string.IsNullOrWhiteSpace(question))
+            synth.AppendLine($"Above all, answer: {question!.Trim()}");
+
+        var synthText = await Ask(synth.ToString());
+        sb.AppendLine("## End-to-end logic");
+        sb.AppendLine(synthText.Trim());
+
+        if (!string.IsNullOrWhiteSpace(goal))
+        {
+            var proposal = await ProposeChange(root, goal!);
+            sb.AppendLine();
+            sb.AppendLine("## Change proposal");
+            sb.AppendLine(proposal.Trim());
+        }
+        return sb.ToString();
+    }
+
+    private string BuildNodePrompt(MethodContext ctx)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(HeaderBlock(ctx));
+        sb.AppendLine("Method source:");
+        sb.AppendLine("```csharp");
+        sb.AppendLine(ctx.Source);
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("Explain concisely (numbered steps) what THIS method does: its inputs/outputs, side " +
+                      "effects, and what it delegates to the methods it calls. Stay focused on this method.");
+        return sb.ToString();
     }
 
     private static string Shorten(string s, int max) =>

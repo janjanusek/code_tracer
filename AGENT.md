@@ -35,8 +35,10 @@ dotnet run -- explain -s <SLN> ( --method "Class.Method" | --file <path.cs> --li
 - `--method "Class.Method"` — when the user knows the name (e.g. `TaxEngine.Calculate`).
 - `--file <path.cs> --line <N>` — when they only know the file and roughly where (any line
   inside the method is enough).
-- `--depth <N>` — how many levels of called methods to pull in (default **1** = "how it fits
-  together", also lists callers; `0` = the method alone, fastest; `2` = deeper, slower). Capped at 8 methods.
+- `--depth <N>` — how deep to follow the **call chain**; each method is explained on its own,
+  then synthesised end-to-end (default **1**; `0` = the method alone, fastest; higher = deeper logic).
+- `--max-methods <N>` — cap on methods explained in the chain (default 8). For "explain the WHOLE
+  logic" on non-trivial code, raise both `--depth` and `--max-methods` (e.g. `--depth 3 --max-methods 15`).
 - `--question "<text>"` (alias `--ask`) — a specific question to focus on. Use whenever the user
   asks something concrete about the code ("where does X come from?", "who calls this?"). Answered first.
 - `--goal "<text>"` — **only** if the user wants a change proposal. For plain understanding, OMIT it.
@@ -93,7 +95,7 @@ If a key piece is missing (for `explain` neither method name **nor** file; for `
 |---|---|
 | "Explain the method `TaxEngine.Calculate`." | `dotnet run -- explain -s <SLN> --method "TaxEngine.Calculate"` |
 | "Tax is computed here — `TaxEngine.Calculate` — explain it and show how it fits together." | `dotnet run -- explain -s <SLN> --method "TaxEngine.Calculate" --depth 1` |
-| "Go deeper, dependencies of dependencies too." | `dotnet run -- explain -s <SLN> --method "TaxEngine.Calculate" --depth 2` |
+| "Explain the WHOLE logic deeply, all the layers." | `dotnet run -- explain -s <SLN> --method "TaxEngine.Calculate" --depth 3 --max-methods 15` |
 | "Explain what's in `Invoices/InvoiceService.cs` around line 540." | `dotnet run -- explain -s <SLN> --file "Invoices/InvoiceService.cs" --line 540` |
 | "Explain `OrderProcessor.Process` and save it to md." | `dotnet run -- explain -s <SLN> --method "OrderProcessor.Process" --out order_process.md` |
 | "Explain `TaxEngine.Calculate` and suggest how to add a VIP discount." | `dotnet run -- explain -s <SLN> --method "TaxEngine.Calculate" --goal "add a discount for VIP customers"` |
