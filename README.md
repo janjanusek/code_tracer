@@ -97,37 +97,39 @@ it's answered first, before the general walkthrough. If a single method is extre
 `--goal "..."` (optional) adds a change proposal with a code snippet — done as a **separate
 call** so a verbose explanation doesn't eat its token budget. Not needed for plain understanding.
 
-### Example output
+### Example output (deep, multi-level)
 
-Running `explain` on one of CodeTracer's own methods (reproducible straight from this repo,
-`gemma4:latest` on CPU):
+A **real** run — CodeTracer explaining **its own** structured-output flow, **3 levels deep**,
+`gemma4:latest` on CPU. Each method on the chain is explained in its own pass, then an
+end-to-end synthesis ties them together:
 
 ```bash
-dotnet run -- explain -s CodeTracer.sln --method "LlmClient.NormalizeRoot" --depth 0
+dotnet run -- explain -s CodeTracer.sln --method "Agent.GetAction" --depth 3 --max-methods 9 \
+  --repo-url https://github.com/janjanusek/code_tracer/blob/main
 ```
 
+```markdown
+# Agent.GetAction  (Agent.cs:214)
+_Deep explanation following the call chain (6 methods)._
+
+## L0 · Agent.GetAction
+This method attempts to extract a structured action (a tool name and its arguments) from a
+large language model's output, ensuring the action is valid… It handles failures by
+iteratively prompting the model for corrections (1 initial + 2 correction attempts).
+
+## L1 · LlmClient.ChatAsync      → the actual HTTP call to Ollama (/api/chat)
+## L1 · Agent.ValidateArgs       → per-tool argument validation
+## L2 · LlmClient.BuildOllama    → builds the request body with the JSON schema (format)
+## L2 · LlmClient.BuildOpenAI    → the OpenAI-compatible variant (response_format)
+## L2 · LlmClient.Truncate       → trims long error bodies
+
+## End-to-end logic
+(how a request flows L0 → L1 → L2 and back: the schema-constrained call, validation,
+ the correction loop, and the deterministic escalation when the model can't comply)
 ```
-# LlmClient.NormalizeRoot  (LlmClient.cs:64)
-`string LlmClient.NormalizeRoot(string api)`
 
-### 1. Method Explanation (Numbered Steps)
-
-This method takes a potentially messy API endpoint string and processes it to return a
-standardized, "clean" root path by performing several cleanup steps:
-
-1. Initial Cleanup: the input (api) is trimmed of leading/trailing whitespace.
-2. Slash Removal: any trailing '/' is removed via TrimEnd('/').
-3. Version Check: it checks (case-insensitively) whether the string ends with /v1.
-4. Root Stripping: if so, it slices off the trailing 3 chars (r[..^3]) and trims '/' again.
-5. Return: the cleaned, standardized path is returned.
-
-### 2. Inputs and Output
-- api: a (possibly messy) API endpoint / URL segment, e.g. " /users/v1/".
-- returns: the normalized root path.
-```
-
-Roslyn handed the model **only this one method** — never the whole file. With `--depth N` it
-follows the call chain and explains each method in turn, then synthesizes the end-to-end logic.
+**→ Full example in the repo:** [`examples/explain-agent-getaction.md`](examples/explain-agent-getaction.md)
+— every method explained in full, with clickable links to each source location.
 
 ---
 
@@ -154,6 +156,32 @@ For non-trivial code where one shortest path isn't enough, **`--all-paths`** (al
 (with a wider graph budget), not just the first. Combine with `--no-llm` for a fast, complete,
 deterministic map.
 
+### Example output
+
+A **real** brute-force run over CodeTracer's own code — **all 15 paths** from `Agent.cs` to
+`RoslynIndex.cs`, deterministic, **zero model calls**:
+
+```bash
+dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --all-paths --no-llm
+```
+
+```
+FOUND 15 distinct path(s) [brute-force]:
+
+### Path 1:  Agent.RunAsync  ->  RoslynIndex.Rel
+PATH FOUND (4 nodes):
+  1. Agent.RunAsync(String, String, String)   Agent.cs:111  -->
+  2. Agent.Dispatch(String, JsonElement)       Agent.cs:447  -->
+  3. RoslynIndex.FindSymbol(String)            RoslynIndex.cs:126  -->
+  4. RoslynIndex.Rel(Location)                 RoslynIndex.cs:38
+...
+### Path 9:  Agent.RunAsync  ->  RoslynIndex.FindCallers
+  1. Agent.RunAsync   →   2. Agent.TryAutoPath   →   3. RoslynIndex.FindCallers
+```
+
+**→ Full example in the repo:** [`examples/trace-agent-to-roslynindex.md`](examples/trace-agent-to-roslynindex.md)
+— all 15 distinct paths, each hop with its `file:line`.
+
 ### Token-level JSON enforcement (why a small model can't "break" the format)
 The model's action selection uses **Ollama structured outputs**: the request carries a
 `format` = flat **JSON schema**, from which Ollama builds a grammar and **masks invalid
@@ -174,6 +202,52 @@ The schema guarantees **format**, not **value quality** — so additionally:
 
 Agent tools: `find_path`, `find_callers`, `find_callees`, `get_method`, `find_symbol`,
 `outline`, `read_file`, `grep`, `finish`.
+
+---
+
+## Choosing `--depth` and `--max-methods`
+
+These two knobs decide how much of the call chain you get — you set them yourself, no AI needed
+to work it out:
+
+- **`--depth N`** — how many *levels* down to follow. `0` = just the method; `1` = the method
+  plus what it directly calls; `N` = N hops deep. In the output, levels are labelled `L0, L1, …`.
+- **`--max-methods M`** — the *total* number of methods to explain (the budget). The walk is
+  **breadth-first**, so it fills level by level (all of L0, then all of L1, …). If `M` runs out
+  at a shallow level, the deeper levels are never reached — even with a big `--depth`.
+
+So **`--depth` says how deep you're *allowed* to go; `--max-methods` says how many methods you
+can *afford*.** To actually reach level N, `M` must be big enough to hold everything at levels
+0…N-1 first. For a method that calls 8 others, `--depth 5 --max-methods 8` only ever shows L0+L1
+(8 methods used up) — raise `--max-methods` to go deeper.
+
+| you want | command |
+|---|---|
+| just this one method (fast) | `--depth 0` |
+| the method + its direct calls | `--depth 1 --max-methods 8` |
+| a few levels of real logic | `--depth 3 --max-methods 12` |
+| deep prod logic, brute depth | `--depth 10 --max-methods 40` |
+
+When the budget runs out you'll see `call chain capped at M methods - raise --max-methods` on
+stderr — that's your cue to bump `--max-methods` (and/or `--depth`).
+
+## Use it without any model (deterministic, offline)
+
+Roslyn does the exact analysis; the local model is **optional**. Two fully model-free workflows
+(they work even if Ollama isn't running):
+
+```bash
+# 1) Map the call paths - pure Roslyn, no model, instant:
+dotnet run -- trace -s Your.sln -f Target.cs -e "POST /orders" --all-paths --no-llm --out paths.md
+
+# 2) Dump the method + its WHOLE call chain (source + structure) to a file - with a short peek
+#    per method and clickable repo links - then read it yourself or paste into a bigger model:
+dotnet run -- explain -s Your.sln --method "Some.Method" --depth 10 --max-methods 40 \
+  --no-llm --peek 15 --repo-url https://github.com/you/repo/blob/main --out context.md
+```
+
+`--peek N` keeps each method body to N lines; `--repo-url` turns every `file:line` into a link
+to the full file in your repo (path is taken relative to the `.sln` directory).
 
 ---
 
