@@ -5,6 +5,10 @@ A local C# tool built on **Roslyn** (`MSBuildWorkspace`) + a **small local model
 large, **15+ year old C# spaghetti** codebase on a **GPU-less VDI**, where a cloud model
 **cannot** be used for privacy reasons.
 
+> **Runs on modest hardware.** Built and used daily on a GPU-less corporate VDI
+> (8 cores / 32 GB RAM, CPU-only) with a **Q4-quantized local model** — no GPU,
+> no cloud, fully offline.
+
 Roslyn does the **precise** analysis (symbols, references, call graph) — nothing is guessed
 by the model. The model only **explains the code it is given** and (in trace mode) decides
 which tool to call.
@@ -28,7 +32,9 @@ It has **two modes**:
 2. **Ollama ≥ 0.5** (structured outputs) — `ollama --version`
 3. Model: `ollama pull gemma4:latest`
 
-With 32 GB RAM and a 7B model, `--num-ctx` of 8–16K is safe; higher risks OOM.
+On a CPU-only machine with 32 GB RAM, a `--num-ctx` of 8–16K is safe; higher risks OOM.
+Smaller / more quantized models (e.g. a Q4 build) run faster but may fill the trace schema
+less reliably — the deterministic `find_path` fallback covers that.
 
 ### Server (Ollama)
 ```bash
@@ -90,6 +96,38 @@ it's answered first, before the general walkthrough. If a single method is extre
 
 `--goal "..."` (optional) adds a change proposal with a code snippet — done as a **separate
 call** so a verbose explanation doesn't eat its token budget. Not needed for plain understanding.
+
+### Example output
+
+Running `explain` on one of CodeTracer's own methods (reproducible straight from this repo,
+`gemma4:latest` on CPU):
+
+```bash
+dotnet run -- explain -s CodeTracer.sln --method "LlmClient.NormalizeRoot" --depth 0
+```
+
+```
+# LlmClient.NormalizeRoot  (LlmClient.cs:64)
+`string LlmClient.NormalizeRoot(string api)`
+
+### 1. Method Explanation (Numbered Steps)
+
+This method takes a potentially messy API endpoint string and processes it to return a
+standardized, "clean" root path by performing several cleanup steps:
+
+1. Initial Cleanup: the input (api) is trimmed of leading/trailing whitespace.
+2. Slash Removal: any trailing '/' is removed via TrimEnd('/').
+3. Version Check: it checks (case-insensitively) whether the string ends with /v1.
+4. Root Stripping: if so, it slices off the trailing 3 chars (r[..^3]) and trims '/' again.
+5. Return: the cleaned, standardized path is returned.
+
+### 2. Inputs and Output
+- api: a (possibly messy) API endpoint / URL segment, e.g. " /users/v1/".
+- returns: the normalized root path.
+```
+
+Roslyn handed the model **only this one method** — never the whole file. With `--depth N` it
+follows the call chain and explains each method in turn, then synthesizes the end-to-end logic.
 
 ---
 
