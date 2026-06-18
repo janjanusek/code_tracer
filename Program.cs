@@ -107,11 +107,11 @@ static async Task<int> RunExplain(Options opts)
     {
         // --no-llm: NEVYSVETLUJ lokalne - len vydaj Roslynom vytiahnuty kontext (na vacsi model).
         Console.Error.WriteLine($"[explain] --no-llm: dumping Roslyn context for {chain.Count} method(s), no model call.");
-        text = Explainer.RenderContext(chain);
+        text = Explainer.RenderContext(chain, opts.RepoUrl, opts.Peek);
     }
     else
     {
-        var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2);
+        var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2, opts.RepoUrl);
         text = opts.Depth <= 0
             ? await explainer.ExplainAsync(chain[0].ctx, opts.Goal, opts.Question)
             : await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question);
@@ -187,6 +187,8 @@ static Options ParseArgs(string[] args)
             case "--question": case "--ask":  o.Question = Next(); break;
             case "--goal":                    o.Goal = Next(); break;
             case "--out":                     o.Out = Next(); break;
+            case "--repo-url":                o.RepoUrl = Next(); break;
+            case "--peek":                    if (int.TryParse(Next(), out var pk)) o.Peek = pk; break;
             case "--no-llm":                  o.UseLlm = false; break;
             case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
             case "-m": case "--model":        o.Model = Next(); break;
@@ -243,6 +245,10 @@ EXPLAIN options:
                       Not needed for plain code understanding.
       --no-llm        DON'T explain locally - just dump the Roslyn-extracted context (method +
                       call-chain source) to feed into a bigger model yourself.
+      --peek N        in the --no-llm dump, show only the first N lines of each method body
+                      (a peek) instead of the full source. Use with --repo-url for the full file.
+      --repo-url URL  render file locations as clickable links to the repo, e.g.
+                      https://github.com/you/repo/blob/main  (path is relative to the .sln dir)
       --out           save the result to a .md file
 
 SHARED options:
@@ -267,8 +273,9 @@ EXAMPLES:
   # fastest single deterministic path (no model round-trips), saved to a file
   codetracer trace -s ./Big.sln -f ./Pricing/PricingEngine.cs -e "POST /orders" --no-llm --out path.md
 
-  # NO local model: dump the method + call-chain source to a file, feed it to a bigger model
-  codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --no-llm --out context.md
+  # NO local model: dump the method + call-chain (peek + clickable repo links) to a file
+  codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --no-llm \
+             --peek 15 --repo-url https://github.com/you/repo/blob/main --out context.md
 
   # save the local explanation to .md
   codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --out tax.md
@@ -297,6 +304,8 @@ class Options
     public string? Question;       // --question/--ask: konkretna otazka, na ktoru sa ma sustredit
     public string? Goal;
     public string? Out;
+    public string? RepoUrl;        // --repo-url: base na klikatelne linky (napr. .../blob/main)
+    public int Peek = 0;           // --peek N: v --no-llm dumpe ukaz len prvych N riadkov tela
 
     // spolocne
     public string Model = "gemma4:latest";

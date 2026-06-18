@@ -13,13 +13,36 @@ public class Explainer
     private readonly int _numPredict;
     private readonly double _temperature;
     private readonly int _blockThreshold;
+    private readonly string? _repoUrl;
 
-    public Explainer(LlmClient llm, int numPredict = 2048, double temperature = 0.2, int blockThreshold = 400)
+    public Explainer(LlmClient llm, int numPredict = 2048, double temperature = 0.2,
+                     string? repoUrl = null, int blockThreshold = 400)
     {
         _llm = llm;
         _numPredict = numPredict;
         _temperature = temperature;
+        _repoUrl = repoUrl;
         _blockThreshold = blockThreshold;
+    }
+
+    /// "relpath:line" -> klikatelny markdown link na repo (ak je repoUrl), inak plain text.
+    public static string LinkLoc(string location, string? repoUrl)
+    {
+        if (string.IsNullOrWhiteSpace(repoUrl)) return location;
+        var i = location.LastIndexOf(':');
+        if (i <= 0) return location;
+        var path = location[..i].Replace('\\', '/');
+        var line = location[(i + 1)..];
+        return $"[{location}]({repoUrl!.TrimEnd('/')}/{path}#L{line})";
+    }
+
+    /// Prvych N riadkov tela (peek). N<=0 => cele telo.
+    private static string Peek(string src, int n)
+    {
+        if (n <= 0) return src;
+        var lines = src.Split('\n');
+        if (lines.Length <= n) return src;
+        return string.Join("\n", lines.Take(n)) + $"\n    // … (+{lines.Length - n} more lines)";
     }
 
     private const string SystemPrompt =
@@ -31,7 +54,7 @@ public class Explainer
     {
         // Self-describing header - aby ulozeny .md davalo zmysel aj samostatne (pre kolegov).
         var sb = new StringBuilder();
-        sb.AppendLine($"# {ctx.Display}  ({ctx.Location})");
+        sb.AppendLine($"# {ctx.Display}  ({LinkLoc(ctx.Location, _repoUrl)})");
         sb.AppendLine($"`{ctx.Signature}`");
         if (!string.IsNullOrWhiteSpace(question))
             sb.AppendLine($"> **Question:** {question!.Trim()}");
@@ -209,7 +232,7 @@ public class Explainer
     {
         var root = chain[0].ctx;
         var sb = new StringBuilder();
-        sb.AppendLine($"# {root.Display}  ({root.Location})");
+        sb.AppendLine($"# {root.Display}  ({LinkLoc(root.Location, _repoUrl)})");
         sb.AppendLine($"`{root.Signature}`");
         if (!string.IsNullOrWhiteSpace(question))
             sb.AppendLine($"> **Question:** {question!.Trim()}");
@@ -225,7 +248,7 @@ public class Explainer
             i++;
             Console.Error.WriteLine($"[explain] ({i}/{chain.Count}) L{level}  {ctx.Display} ...");
             var part = await Ask(BuildNodePrompt(ctx), nodeBudget);
-            sb.AppendLine($"## L{level} · {ctx.Display}  ({ctx.Location})");
+            sb.AppendLine($"## L{level} · {ctx.Display}  ({LinkLoc(ctx.Location, _repoUrl)})");
             sb.AppendLine(part.Trim());
             sb.AppendLine();
             notes.Add($"L{level} {ctx.Display}: {Shorten(part, 500)}");
@@ -277,22 +300,26 @@ public class Explainer
 
     /// --no-llm: vyrenderuje Roslynom vytiahnuty kontext (metoda + call-chain + zdrojaky)
     /// do markdownu BEZ volania modelu. Vystup je pripraveny na vlozenie do vacsieho modelu.
-    public static string RenderContext(IReadOnlyList<(int level, MethodContext ctx)> chain)
+    /// repoUrl => klikatelne linky na cely subor v repe; peek>0 => len prvych N riadkov tela.
+    public static string RenderContext(IReadOnlyList<(int level, MethodContext ctx)> chain,
+                                       string? repoUrl = null, int peek = 0)
     {
         var root = chain[0].ctx;
         var sb = new StringBuilder();
-        sb.AppendLine($"# Context for {root.Display}  ({root.Location})");
+        sb.AppendLine($"# Context for {root.Display}  ({LinkLoc(root.Location, repoUrl)})");
         sb.AppendLine($"_Roslyn-extracted, {chain.Count} method(s). No model was run — paste this into a " +
                       "bigger model and ask it to explain the logic step by step._");
         sb.AppendLine();
         foreach (var (level, ctx) in chain)
         {
-            sb.AppendLine($"## L{level} · {ctx.Display}  ({ctx.Location})");
+            sb.AppendLine($"## L{level} · {ctx.Display}  ({LinkLoc(ctx.Location, repoUrl)})");
             sb.AppendLine(HeaderBlock(ctx).Trim());
             sb.AppendLine();
             sb.AppendLine("```csharp");
-            sb.AppendLine(ctx.Source);
+            sb.AppendLine(Peek(ctx.Source, peek));
             sb.AppendLine("```");
+            if (peek > 0)
+                sb.AppendLine($"↳ full method / file: {LinkLoc(ctx.Location, repoUrl)}");
             sb.AppendLine();
         }
         return sb.ToString();
