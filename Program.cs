@@ -36,7 +36,7 @@ static async Task<int> RunTrace(Options opts)
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
 
-    var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths);
+    var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths, opts.Out);
     await agent.RunAsync(opts.Solution!, opts.TargetFile!, opts.Endpoint!);
     return 0;
 }
@@ -77,41 +77,44 @@ static async Task<int> RunExplain(Options opts)
         return 1;
     }
 
-    var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2);
-    string text;
-
+    // postav call-chain (depth 0 = len metoda) - pouzije sa pre model aj pre --no-llm dump
+    List<(int level, MethodContext ctx)>? chain;
     if (opts.Depth <= 0)
     {
-        // jedna metoda - najrychlejsie (jeden call)
         var where = cls != null ? $"{cls}.{method}" : $"{opts.File}:{opts.Line}";
         Console.Error.WriteLine($"[explain] looking for {where} (depth=0) ...");
         var ctx = cls != null
             ? await index.BuildMethodContext(cls, method!, 0)
             : await index.BuildMethodContextByLocation(opts.File!, opts.Line, 0);
-        if (ctx == null)
-        {
-            Console.Error.WriteLine("[error] method not found or has no source available (possibly from metadata).");
-            return 1;
-        }
-        Console.Error.WriteLine($"[explain] {ctx.Display}  {ctx.Location}  (~{ctx.BodyLineCount} body lines, " +
-                                $"{ctx.Callees.Count} callees)");
-        text = await explainer.ExplainAsync(ctx, opts.Goal, opts.Question);
+        chain = ctx == null ? null : new List<(int, MethodContext)> { (0, ctx) };
     }
     else
     {
-        // deep: vysvetli CELU logiku po call-chain (kazda metoda samostatne + synteza)
         Console.Error.WriteLine($"[explain] building call chain (depth={opts.Depth}, max-methods={opts.MaxMethods}) ...");
-        var chain = cls != null
+        chain = cls != null
             ? await index.BuildExplainChain(cls, method!, opts.Depth, opts.MaxMethods)
             : await index.BuildExplainChainByLocation(opts.File!, opts.Line, opts.Depth, opts.MaxMethods);
-        if (chain == null || chain.Count == 0)
-        {
-            Console.Error.WriteLine("[error] method not found or has no source available (possibly from metadata).");
-            return 1;
-        }
-        Console.Error.WriteLine($"[explain] chain has {chain.Count} methods - explaining each + end-to-end synthesis " +
-                                $"({chain.Count + 1} model calls) ...");
-        text = await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question);
+    }
+
+    if (chain == null || chain.Count == 0)
+    {
+        Console.Error.WriteLine("[error] method not found or has no source available (possibly from metadata).");
+        return 1;
+    }
+
+    string text;
+    if (!opts.UseLlm)
+    {
+        // --no-llm: NEVYSVETLUJ lokalne - len vydaj Roslynom vytiahnuty kontext (na vacsi model).
+        Console.Error.WriteLine($"[explain] --no-llm: dumping Roslyn context for {chain.Count} method(s), no model call.");
+        text = Explainer.RenderContext(chain);
+    }
+    else
+    {
+        var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2);
+        text = opts.Depth <= 0
+            ? await explainer.ExplainAsync(chain[0].ctx, opts.Goal, opts.Question)
+            : await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question);
     }
 
     Console.WriteLine();
@@ -225,6 +228,7 @@ TRACE options:
                       (fastest + fully reliable when the endpoint resolves to a file)
       --max-steps     agent step limit (default 25)
       --summary       append a short free-text summary of the path at the end
+      --out           save the result (the path / all paths) to a file
 
 EXPLAIN options:
       --method        "Class.Method" - which method to explain
@@ -237,6 +241,8 @@ EXPLAIN options:
       --question      (--ask) a specific question to focus the explanation on
       --goal          (optional) "what to change" - adds a change proposal with a code sample.
                       Not needed for plain code understanding.
+      --no-llm        DON'T explain locally - just dump the Roslyn-extracted context (method +
+                      call-chain source) to feed into a bigger model yourself.
       --out           save the result to a .md file
 
 SHARED options:
@@ -258,10 +264,13 @@ EXAMPLES:
   # brute-force trace: ALL paths from an endpoint to the target class (non-trivial code)
   codetracer trace -s ./Big.sln -f ./Pricing/PricingEngine.cs -e "POST /orders" --all-paths --no-llm
 
-  # fastest single deterministic path (no model round-trips)
-  codetracer trace -s ./Big.sln -f ./Pricing/PricingEngine.cs -e "POST /orders" --no-llm
+  # fastest single deterministic path (no model round-trips), saved to a file
+  codetracer trace -s ./Big.sln -f ./Pricing/PricingEngine.cs -e "POST /orders" --no-llm --out path.md
 
-  # save the explanation to .md
+  # NO local model: dump the method + call-chain source to a file, feed it to a bigger model
+  codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --no-llm --out context.md
+
+  # save the local explanation to .md
   codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --out tax.md
 """);
 }

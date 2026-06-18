@@ -274,4 +274,27 @@ public class Explainer
 
     private static string Shorten(string s, int max) =>
         s.Length <= max ? s.Trim() : s[..max].Trim() + " ...";
+
+    /// --no-llm: vyrenderuje Roslynom vytiahnuty kontext (metoda + call-chain + zdrojaky)
+    /// do markdownu BEZ volania modelu. Vystup je pripraveny na vlozenie do vacsieho modelu.
+    public static string RenderContext(IReadOnlyList<(int level, MethodContext ctx)> chain)
+    {
+        var root = chain[0].ctx;
+        var sb = new StringBuilder();
+        sb.AppendLine($"# Context for {root.Display}  ({root.Location})");
+        sb.AppendLine($"_Roslyn-extracted, {chain.Count} method(s). No model was run — paste this into a " +
+                      "bigger model and ask it to explain the logic step by step._");
+        sb.AppendLine();
+        foreach (var (level, ctx) in chain)
+        {
+            sb.AppendLine($"## L{level} · {ctx.Display}  ({ctx.Location})");
+            sb.AppendLine(HeaderBlock(ctx).Trim());
+            sb.AppendLine();
+            sb.AppendLine("```csharp");
+            sb.AppendLine(ctx.Source);
+            sb.AppendLine("```");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
 }

@@ -11,6 +11,7 @@ public class Agent
     private readonly bool _summarize;
     private readonly bool _useLlm;
     private readonly bool _allPaths;
+    private readonly string? _outPath;
     private readonly int _actionNumPredict;
 
     // Deterministicky predpripravene kandidatske dvojice pre find_path.
@@ -21,7 +22,7 @@ public class Agent
 
     public Agent(LlmClient llm, RoslynIndex index, int maxSteps = 25,
                  bool summarize = false, bool useLlm = true, bool allPaths = false,
-                 int actionNumPredict = 512)
+                 string? outPath = null, int actionNumPredict = 512)
     {
         _llm = llm;
         _index = index;
@@ -29,6 +30,7 @@ public class Agent
         _summarize = summarize;
         _useLlm = useLlm;
         _allPaths = allPaths;
+        _outPath = outPath;
         _actionNumPredict = actionNumPredict;
     }
 
@@ -298,6 +300,16 @@ fall back to find_callers from the target going UP one hop at a time, then finis
     {
         Console.WriteLine($"\n========== DONE ({reason}) ==========");
         Console.WriteLine(pathText.Trim());
+
+        if (!string.IsNullOrWhiteSpace(_outPath))
+        {
+            try
+            {
+                await File.WriteAllTextAsync(_outPath!, pathText.Trim() + "\n");
+                Console.Error.WriteLine($"[trace] saved to {_outPath}");
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
+        }
 
         if (!_summarize) return;
 
