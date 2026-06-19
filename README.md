@@ -1,17 +1,22 @@
 # CodeTracer
 
-A local C# tool built on **Roslyn** (`MSBuildWorkspace`) + a **small local model**
-(Ollama, default `gemma4:latest`, **CPU-only**, no GPU). It was built to understand a
-large, **15+ year old C# spaghetti** codebase on a **GPU-less VDI**, where a cloud model
-**cannot** be used for privacy reasons.
+**Drowning in a huge, 15-year-old C# codebase — on a locked-down corporate machine with no GPU
+and no cloud AI allowed?** CodeTracer maps how the code actually connects and explains it for
+you, **fully offline**. Roslyn does the exact analysis; a small local model (Ollama, CPU-only)
+does the explaining. No GPU, no cloud — nothing leaves your machine.
+
+It answers the two questions you keep asking in legacy code:
+- **"How does execution get from here to there?"** → **`trace`** prints the call chain hop by
+  hop — *through interfaces and DI too* (it bridges interface calls to their implementations,
+  and can list every implementation that reaches your target).
+- **"What does this code actually do?"** → **`explain`** walks a method (and, as deep as you
+  ask, its call chain) and explains it step by step, ending with a plain-words recap.
+
+Roslyn does the **precise** analysis (symbols, references, call graph) — nothing is guessed by
+the model; the model only **explains the code it is given**.
 
 > **Runs on modest hardware.** Built and used daily on a GPU-less corporate VDI
-> (8 cores / 32 GB RAM, CPU-only) with a **Q4-quantized local model** — no GPU,
-> no cloud, fully offline.
-
-Roslyn does the **precise** analysis (symbols, references, call graph) — nothing is guessed
-by the model. The model only **explains the code it is given** and (in trace mode) decides
-which tool to call.
+> (8 cores / 32 GB RAM, CPU-only) with a **Q4-quantized local model** — no GPU, no cloud, fully offline.
 
 It has **two modes**:
 
@@ -152,7 +157,7 @@ printed hop by hop** (`Class.Method  file:line`), so you can follow it by eye. F
 Trace runs a **deterministic pre-flight first**: it tries `find_path` over the bootstrapped
 candidate pairs immediately. If they connect (the common case), it prints the path with **no
 model calls at all** — fast and fully reliable on CPU. Only when the pairs don't connect does
-it hand over to the model loop (for interface/DI/reflection cases that need navigation). Use
+it hand over to the model loop (rare, for purely-dynamic links that need navigation). Use
 **`--no-llm`** to skip the model entirely and stay purely deterministic.
 
 For non-trivial code where one shortest path isn't enough, **`--all-paths`** (aliases
@@ -310,7 +315,9 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
   first. `MSBuildWorkspace` must be able to open it. `[workspace] …` warnings during load are
   normal (missing analyzers / NuGet advisories) — it continues.
 - **`.slnx`** (the new SDK format) may not open in older Roslyn — use a classic `.sln`.
-- **`find_path` finds nothing** → the call goes through interface/DI/reflection/events. Pass
+- **`find_path` finds nothing** → interface & DI calls *are* followed automatically (Roslyn
+  bridges interface members to implementations); a true miss means a **purely dynamic** link —
+  reflection (`Activator`/`MethodInfo.Invoke`), `dynamic`, or a handler wired up at runtime. Pass
   `--endpoint` as a concrete implementation method.
 - **CPU is slow** → `explain --depth 0`, lower `--num-predict`, or a smaller model.
 

@@ -99,14 +99,14 @@ methods, skipping `-f`/`-e`. Works with all the rendering options below.
 ### How it finds the path
 Trace runs a **deterministic pre-flight**: `find_path` is a BFS over callers in Roslyn — exact,
 not guessed. In the common case it prints the path with **no model calls at all**. The model
-loop is a fallback for interface/DI/reflection cases. The output is the path, hop by hop, as
+loop is a fallback for the rare purely-dynamic cases. The output is the path, hop by hop, as
 `Class.Method  file:line`.
 
 ### Trace rendering options
 
 | option | effect |
 |---|---|
-| `--all-paths` (`--brute`) | enumerate **all** distinct paths, not just the first/shortest |
+| `--all-paths` (`--brute`) | enumerate **all** distinct paths, not just the first/shortest. With `--from/--to`: every path between the two methods — one per interface implementation / decorator chain |
 | `--with-bodies` (`--code`) | between hops, show each method's code from its start down to the call to the next hop; **param names** in signatures; **arg → param** mapping at each call site; the **target** node shows its full body |
 | `--annotate` (`--why`) | a short LLM **"why" note per hop** (depth-aware: it sees the prior steps); trivial hops get none. Implies `--with-bodies` |
 | `--summary` | a final **Summary** (purpose, dependencies, "good to know") **followed by an "In plain words" recap** — a 2-4 sentence "explain like I'm 10" version. Both go to the output / saved file |
@@ -121,6 +121,29 @@ dotnet run -- trace -s App.sln --from "OrdersController.Create" --to "PricingEng
 ```
 See `examples/` for real output: `trace-with-bodies.md`, `trace-with-bodies-annotated.md`,
 `trace-agent-to-roslynindex.md` (all paths).
+
+### DI, interfaces & multiple implementations
+
+CodeTracer traces **through dependency injection and interfaces** out of the box. When a method
+calls `service.DoWork()` and `service` is an interface, Roslyn's caller search **cascades through
+the interface member to its implementations**, so the path continues into the concrete code —
+you don't have to start from the implementation. Direct `new` instantiation and factories work
+too (they're static calls).
+
+When an interface has **several implementations that each reach the target**, enumerate them all
+with **direct mode + `--all-paths`**:
+
+```bash
+dotnet run -- trace -s App.sln --from "NotificationService.Notify" --to "Audit.Record" --all-paths
+```
+
+It lists **every distinct path** — one per implementation, including decorator chains (an impl
+that wraps another impl). See [`examples/trace-di-multiple-impls.md`](examples/trace-di-multiple-impls.md),
+produced from the `samples/di-playground` project.
+
+Tracing only stops at **purely dynamic** links that don't exist statically: reflection
+(`Activator.CreateInstance` + `MethodInfo.Invoke`), `dynamic`, or handlers wired up at runtime.
+For those, start from a concrete implementation method (`--from` / `-e`).
 
 ---
 
@@ -248,7 +271,7 @@ dotnet run -- explain -s App.sln --method "Some.Method" --depth 10 --max-methods
   `[workspace] …` warnings during load are normal.
 - **`.slnx`** (new SDK format) may not open in older Roslyn — use a classic `.sln`.
 - **Ambiguous match warning** → see §6; use `--file --line` or a more unique entry point.
-- **`find_path` finds nothing** → the call goes through interface/DI/reflection/events; try the
+- **`find_path` finds nothing** → interface/DI calls are followed; a true miss is a purely-dynamic link (reflection / `dynamic` / runtime-wired handler). Try the
   model loop (omit `--no-llm`) or `--from/--to` between concrete methods.
 - **Slow on CPU** → `explain --depth 0`, lower `--num-predict`, drop `--summary`/`--annotate`,
   or use `--no-llm` and hand the dump to a bigger model.

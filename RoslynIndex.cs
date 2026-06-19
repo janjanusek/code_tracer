@@ -326,8 +326,88 @@ public class RoslynIndex
             }
         }
         return $"path not found (explored {explored} nodes). " +
-               "The call may go through interface/DI/reflection/events - try find_callers manually " +
-               "or find_callees from the source going down.";
+               "Interface/DI calls ARE followed (Roslyn bridges interface members to their " +
+               "implementations), so this usually means a purely dynamic link: reflection " +
+               "(Activator.CreateInstance / MethodInfo.Invoke), `dynamic`, or a handler wired up at " +
+               "runtime. Try find_callers manually, or find_callees from the source going down.";
+    }
+
+    /// Enumerates ALL distinct paths from (fromClass.fromMethod) to (toClass.toMethod), not just the
+    /// shortest. This surfaces the case the matters for DI: an interface with MULTIPLE implementations
+    /// where more than one implementation reaches the target - each becomes its own path. Bounded by
+    /// maxPaths / maxDepth / maxNodes so it can't explode on a large graph.
+    public async Task<string> FindAllPaths(string fromClass, string fromMethod, string toClass, string toMethod,
+                                           int maxPaths = 12, int maxDepth = 15, int maxNodes = 20000,
+                                           bool withBodies = false, string? repoUrl = null,
+                                           Func<string, string, string, string, Task<string?>>? annotate = null)
+    {
+        var start = await ResolveMethod(fromClass, fromMethod);
+        var target = await ResolveMethod(toClass, toMethod);
+        if (start == null) return $"source method {fromClass}.{fromMethod} not found";
+        if (target == null) return $"target method {toClass}.{toMethod} not found";
+        var cmp = SymbolEqualityComparer.Default;
+        if (cmp.Equals(start, target)) return "source == target (same method)";
+
+        var callerCache = new Dictionary<ISymbol, List<IMethodSymbol>>(cmp);
+        async Task<List<IMethodSymbol>> Callers(IMethodSymbol node)
+        {
+            if (callerCache.TryGetValue(node, out var cached)) return cached;
+            var list = new List<IMethodSymbol>();
+            foreach (var c in await SymbolFinder.FindCallersAsync(node, _solution))
+                if (c.CallingSymbol is IMethodSymbol m) list.Add(m);
+            callerCache[node] = list;
+            return list;
+        }
+
+        var found = new List<List<IMethodSymbol>>();
+        var onStack = new HashSet<ISymbol>(cmp) { target };
+        var path = new List<IMethodSymbol> { target };   // target-first, going UP
+        int explored = 0;
+
+        async Task Dfs(IMethodSymbol node)
+        {
+            if (found.Count >= maxPaths || path.Count > maxDepth || explored >= maxNodes) return;
+            explored++;
+            foreach (var caller in await Callers(node))
+            {
+                if (cmp.Equals(caller, start))
+                {
+                    var full = new List<IMethodSymbol>(path) { start };
+                    full.Reverse();                       // start -> ... -> target
+                    found.Add(full);
+                    if (found.Count >= maxPaths) return;
+                    continue;
+                }
+                if (onStack.Contains(caller)) continue;   // no cycles within one path
+                onStack.Add(caller); path.Add(caller);
+                await Dfs(caller);
+                path.RemoveAt(path.Count - 1); onStack.Remove(caller);
+                if (found.Count >= maxPaths) return;
+            }
+        }
+        await Dfs(target);
+
+        // dedup by signature sequence, shortest first
+        var seen = new HashSet<string>();
+        var distinct = found.OrderBy(p => p.Count)
+                            .Where(p => seen.Add(string.Join("|", p.Select(Sig))))
+                            .ToList();
+        if (distinct.Count == 0)
+            return $"path not found from {fromClass}.{fromMethod} to {toClass}.{toMethod} (explored {explored} nodes).";
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"FOUND {distinct.Count} distinct path(s) [all]" +
+                      (found.Count >= maxPaths ? $" (capped at {maxPaths})" : "") + ":");
+        int n = 0;
+        foreach (var p in distinct)
+        {
+            n++;
+            if (n > 1) { sb.AppendLine(); sb.AppendLine("---"); }
+            sb.AppendLine();
+            sb.AppendLine($"### Path {n}:  {fromClass}.{fromMethod}  ->  {toClass}.{toMethod}");
+            sb.AppendLine((await RenderPath(p, withBodies, repoUrl, annotate)).Trim());
+        }
+        return sb.ToString();
     }
 
     /// Renders the found path. withBodies=false -> compact list (for the model and default trace).

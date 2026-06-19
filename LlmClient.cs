@@ -32,6 +32,9 @@ public sealed class ChatOptions
     /// JSON schema (as a JsonElement). When provided, the output is grammar-constrained
     /// to structurally valid JSON. null => unconstrained text.
     public JsonElement? Format { get; init; }
+    /// For reasoning models (Ollama): false disables "thinking" so the whole token budget
+    /// goes to the actual answer (e.g. for short direct outputs). null => server default.
+    public bool? Think { get; init; }
 }
 
 /// <summary>
@@ -148,6 +151,7 @@ public class LlmClient
             ["options"] = opts,
         };
         if (o.Format is JsonElement fmt) payload["format"] = fmt;
+        if (o.Think is bool think) payload["think"] = think;   // reasoning models: false = direct answer
 
         return ($"{_root}/api/chat", JsonSerializer.Serialize(payload));
     }

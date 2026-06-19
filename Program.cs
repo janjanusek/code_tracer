@@ -293,8 +293,9 @@ TRACE options:
   -e, --endpoint      starting point B (route or Class.Method)
       --from "C.M"    direct mode: find the path FROM this method ...
       --to "C.M"      ... TO this method (skips -f/-e; "how do I get from C.M to C2.M2")
-      --all-paths     (--brute / --deep) enumerate ALL distinct paths, not just the first.
-                      For non-trivial code where one shortest path isn't enough.
+      --all-paths     (--brute / --deep) enumerate ALL distinct paths, not just the first. With
+                      --from/--to it lists every path between the two methods - e.g. one per
+                      interface implementation that reaches the target (DI/decorator chains).
       --with-bodies   (--code) between hops, show each method's code from its start down to
                       the call to the next hop. With --repo-url, locations become repo links.
       --annotate      (--why) add a short LLM note per hop explaining WHY it calls the next

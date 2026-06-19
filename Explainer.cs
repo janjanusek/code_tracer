@@ -239,7 +239,7 @@ public class Explainer
             {
                 new ChatMsg("system", "You explain technical things in very simple, plain language. No jargon."),
                 new ChatMsg("user", prompt)
-            }, new ChatOptions { Temperature = 0.3, NumPredict = 300 }, "eli10")).Trim();
+            }, new ChatOptions { Temperature = 0.3, NumPredict = 800, Think = false }, "eli10")).Trim();
         }
         catch { return ""; }
     }

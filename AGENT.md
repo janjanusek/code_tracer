@@ -32,9 +32,10 @@ So every command starts with: `dotnet run -- <command> -s "C:\...\Your.sln" ...`
 dotnet run -- explain -s <SLN> ( --method "Class.Method" | --file <path.cs> --line <N> )
                       [--depth <N>] [--question "<text>"] [--goal "<text>"] [--out <file.md>] [shared]
 ```
-- `--method "Class.Method"` — when the user knows the name (e.g. `TaxEngine.Calculate`).
+- `--method "Class.Method"` — when the user knows the name (e.g. `TaxEngine.Calculate`). Also
+  works on a **property**: `--method "Class.PropertyName"`.
 - `--file <path.cs> --line <N>` — when they only know the file and roughly where (any line
-  inside the method is enough).
+  inside the method is enough). (Methods only; for a property use `--method`.)
 - `--depth <N>` — how deep to follow the **call chain**; each method is explained on its own,
   then synthesised end-to-end (default **1**; `0` = the method alone, fastest; higher = deeper logic).
 - `--max-methods <N>` — cap on methods explained in the chain (default 8). For "explain the WHOLE
@@ -44,21 +45,31 @@ dotnet run -- explain -s <SLN> ( --method "Class.Method" | --file <path.cs> --li
 - `--goal "<text>"` — **only** if the user wants a change proposal. For plain understanding, OMIT it.
 - `--out <file.md>` — if they want the result saved to a file.
 
-### trace — finds the whole call chain from an endpoint (B) to a target class (A)
+### trace — finds the call chain (endpoint → target class, OR method → method)
 ```
-dotnet run -- trace -s <SLN> -f <target.cs> -e "<endpoint>" [--no-llm] [--max-steps <N>] [--summary] [shared]
+dotnet run -- trace -s <SLN> ( -f <target.cs> -e "<endpoint>" | --from "C.M" --to "C2.M2" )
+                      [--all-paths] [--with-bodies] [--annotate] [--summary]
+                      [--repo-url <url>] [--no-llm] [--out <file>] [shared]
 ```
-- `-f <target.cs>` — file of the target class A (where the call lives / where they want to reach).
-- `-e "<endpoint>"` — starting point B: a route (`POST /orders`) or `Class.Method`
-  (`OrdersController.Create`). For a Razor `.cshtml` page it can be the path to the `.cshtml`.
-- `--no-llm` — deterministic only, no model. Add it when the user wants it fast/reliable and
-  the endpoint is a concrete file/method (the common case). Safe default to suggest for speed.
-- `--summary` — if they also want a short prose summary of the path at the end.
+- `-f <target.cs>` + `-e "<endpoint>"` — endpoint→target-class mode. `-e` is a route
+  (`POST /orders`), a `Class.Method`, or a `.cshtml` path; `-f` is the target class's file.
+- `--from "Class.Method" --to "Class.Method"` — **direct mode**: the path between two concrete
+  methods ("how do I get from this method to that one?"). Skips `-f`/`-e`.
+- `--all-paths` (`--brute`) — enumerate **all** distinct paths, not just the shortest. Use for
+  "show every way it can reach there".
+- `--with-bodies` (`--code`) — show each method's code between hops (+ parameter names + the
+  argument→parameter mapping at each call site).
+- `--annotate` (`--why`) — a short LLM "why" note per hop. Implies `--with-bodies`.
+- `--summary` — a final Summary (purpose / dependencies / good-to-know) **plus a plain-words
+  "explain like I'm 10" recap**.
+- `--repo-url <base>` — clickable links to the repo, e.g. `https://github.com/you/repo/blob/main`.
+- `--no-llm` — deterministic only, no model (fast, works offline). Combine with `--all-paths`
+  for a complete deterministic map.
 
 ### Shared (add only when the request calls for it)
 ```
--m <model>           --api-style ollama|openai     --num-ctx <N>
--a <api>             --num-predict <N>             --temperature <f>
+-m <model>           --api-style ollama|openai     --num-ctx <N>      --out <file>
+-a <api>             --num-predict <N>             --temperature <f>  --repo-url <url>
 ```
 
 ---
@@ -78,8 +89,14 @@ Do they want to UNDERSTAND specific code / a calculation / logic ("explain", "wh
 Do they want to find a PATH / "how does execution reach here" / "where is it called from" /
    "connect endpoint X with method/class Y" (direction doesn't matter)?
    → trace
-       target class/file (where)             → -f <target.cs>
-       endpoint / route / starting method    → -e "<B>"
+       from a concrete method to another?    → --from "C.M" --to "C2.M2"   (direct)
+       otherwise: target class/file (where)  → -f <target.cs>
+                  endpoint / route / start    → -e "<B>"
+       wants every path, not just one?       → + --all-paths
+       wants to see the code between hops?   → + --with-bodies  (+ --annotate for "why" notes)
+       wants a summary at the end?           → + --summary
+       wants it fast / no AI?                → + --no-llm
+       wants clickable repo links?           → + --repo-url <base>
 ```
 
 If a key piece is missing (for `explain` neither method name **nor** file; for `trace` no
@@ -103,6 +120,11 @@ If a key piece is missing (for `explain` neither method name **nor** file; for `
 | "In `TaxEngine.Calculate`, where does the VAT rate come from?" | `dotnet run -- explain -s <SLN> --method "TaxEngine.Calculate" --depth 1 --ask "where does the VAT rate come from?"` |
 | "Who calls `OrderProcessor.Process`?" | `dotnet run -- explain -s <SLN> --method "OrderProcessor.Process" --depth 1 --ask "which methods call this?"` |
 | "How does execution reach `PricingEngine` (`Pricing/PricingEngine.cs`) from `POST /orders`?" | `dotnet run -- trace -s <SLN> -f "Pricing/PricingEngine.cs" -e "POST /orders"` |
+| "How do I get from `OrdersController.Create` to `PricingEngine.Compute`?" | `dotnet run -- trace -s <SLN> --from "OrdersController.Create" --to "PricingEngine.Compute"` |
+| "Show me ALL the ways the agent reaches `PricingEngine`, with a summary." | `dotnet run -- trace -s <SLN> --from "OrdersController.Create" --to "PricingEngine.Compute" --all-paths --summary` |
+| "We use DI/interfaces — show every implementation path from `X.M` to `Y.M`." | `dotnet run -- trace -s <SLN> --from "X.M" --to "Y.M" --all-paths` |
+| "Trace it and show the actual code between the steps, with a why-note per step." | `dotnet run -- trace -s <SLN> --from "A.M" --to "B.M" --with-bodies --annotate --repo-url https://github.com/you/repo/blob/main` |
+| "Explain the property `Invoice.Total`." | `dotnet run -- explain -s <SLN> --method "Invoice.Total"` |
 | "Just give me the path fast, no AI." | `dotnet run -- trace -s <SLN> -f "Pricing/PricingEngine.cs" -e "POST /orders" --no-llm` |
 | "Find the path from `OrdersController.Create` to `PricingEngine.cs`." | `dotnet run -- trace -s <SLN> -f "Pricing/PricingEngine.cs" -e "OrdersController.Create"` |
 | "Connect the Razor page `Pages/Checkout.cshtml` with `PaymentService.cs` and give a summary." | `dotnet run -- trace -s <SLN> -f "Payments/PaymentService.cs" -e "Pages/Checkout.cshtml" --summary` |

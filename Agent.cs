@@ -217,9 +217,19 @@ fall back to find_callers from the target going UP one hop at a time, then finis
     /// rendering options (with-bodies / annotate) and final --summary as the normal trace.
     public async Task RunDirectAsync(string fromClass, string fromMethod, string toClass, string toMethod)
     {
+        var ann = Annotator();
+        if (_allPaths)
+        {
+            // enumerate EVERY path (e.g. one per interface implementation that reaches the target)
+            Console.WriteLine($"[direct] all paths {fromClass}.{fromMethod} -> {toClass}.{toMethod}");
+            var all = await _index.FindAllPaths(fromClass, fromMethod, toClass, toMethod,
+                withBodies: _withBodies, repoUrl: _repoUrl, annotate: ann);
+            await Finish(all, "direct-all");
+            return;
+        }
         Console.WriteLine($"[direct] find_path {fromClass}.{fromMethod} -> {toClass}.{toMethod}");
         var res = await _index.FindPath(fromClass, fromMethod, toClass, toMethod,
-            maxNodes: 20000, withBodies: _withBodies, repoUrl: _repoUrl, annotate: Annotator());
+            maxNodes: 20000, withBodies: _withBodies, repoUrl: _repoUrl, annotate: ann);
         await Finish(res, "direct");
     }
 
@@ -383,7 +393,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             {
                 new ChatMsg("system", "You explain technical things in very simple, plain language. No jargon."),
                 new ChatMsg("user", prompt)
-            }, new ChatOptions { Temperature = 0.3, NumPredict = 300 }, "eli10")).Trim();
+            }, new ChatOptions { Temperature = 0.3, NumPredict = 800, Think = false }, "eli10")).Trim();
         }
         catch { return ""; }
     }

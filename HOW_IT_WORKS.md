@@ -83,12 +83,16 @@ Knobs: `--num-predict` (output cap, default 4096; chain nodes get a smaller per-
 the synthesis gets the full cap), `--temperature` (default 0.2).
 
 ### 3. Special cases
+- **Properties:** `--method "Class.Property"` resolves a property/indexer and explains its
+  get/set accessor bodies (reads/writes, callees, callers) — same pipeline as a method.
 - **`--question "…"`** is placed *first* in the task, so it's answered even if the output is
   truncated by `num_predict`.
 - **`--goal "…"`** (change proposal) is a **separate** call, so a long explanation can't eat
   its token budget. Output gets a `## Change proposal` section.
 - **Long methods (> 400 lines)** are split into top-level **blocks** (~120 lines each),
   explained block-by-block, then a final summary call stitches it together.
+- Every explanation ends with an **`## In plain words`** recap — a cheap second pass that
+  re-states it for a 10-year-old (plain words, no jargon).
 - The output always starts with a self-describing header (method, location, signature) so a
   saved `.md` makes sense on its own.
 
@@ -122,9 +126,10 @@ budget, 20000 nodes) and prints **all distinct paths**. For non-trivial code whe
 shortest path isn't the whole picture.
 
 ### 3. The model loop — only for the hard cases
-If no pair connects (calls through interface/DI/reflection/events that BFS-over-callers can't
-bridge), the model loop runs. Each step the model picks one tool. The deterministic pre-flight
-result is cached and used as the final answer if the model doesn't do better.
+If no pair connects, the model loop runs. (Interface/DI calls *do* connect — `FindCallersAsync`
+cascades through interface members to their implementations — so a real miss is a purely dynamic
+link: reflection, `dynamic`, or a runtime-wired handler.) Each step the model picks one tool. The
+deterministic pre-flight result is cached and used as the final answer if the model doesn't do better.
 
 ### 4. Token-level JSON enforcement
 This is the core of why a small model can't break the format. Each action request sends a
@@ -148,6 +153,24 @@ A grammar can't make the values sensible — a small model may under-fill `find_
 
 This is why the model "driving badly" is fine — Roslyn delivers the path either way.
 
+### 6. Direct mode & rendering the path
+- **`--from "C.M" --to "C2.M2"`** skips the bootstrap and runs `find_path` between the two
+  concrete methods directly ("how do I get from here to there"). With **`--all-paths`** it runs
+  a bounded DFS (`FindAllPaths`) that enumerates **every** distinct path — e.g. one per interface
+  implementation that reaches the target, including decorator chains (DI). Interface/DI bridging
+  is automatic because `FindCallersAsync` cascades through interface members to implementations.
+- **`--with-bodies`** renders, between each hop, the caller's code from its start down to the
+  call site of the next hop (line-numbered, clipped), with **parameter names** in signatures and
+  the **argument → parameter** mapping at the call site; the **target** node shows its full body.
+- **`--annotate`** adds a short LLM "why" note per hop. The annotator receives the prior steps,
+  so the notes are depth-aware; trivial hops return `null` (just the code). **`--repo-url`**
+  turns every `file:line` into a link.
+- **`--summary`** appends a final Summary (purpose / dependencies / good-to-know) and a second,
+  plain-words **"In plain words"** recap — a cheap second pass over the summary just produced.
+
+The model's own `find_path` calls (inside the loop) always use the compact, no-bodies format, so
+observations stay small; the rich rendering only applies to the deterministic result the user sees.
+
 ---
 
 ## `LlmClient` — talking to the model
@@ -159,6 +182,18 @@ This is why the model "driving badly" is fine — Roslyn delivers the path eithe
   (for LM Studio). Note: `num_ctx` can't be set over the OpenAI endpoint.
 - On startup it best-effort reads `/api/version` and warns if it can't confirm Ollama ≥ 0.5
   (structured outputs need it).
+- It accumulates **token usage** per call (Ollama `prompt_eval_count`/`eval_count`, OpenAI
+  `usage.*_tokens`) and times each call, so the run can print a `[perf]` line.
+
+---
+
+## Performance — the `[perf]` line
+
+Every run prints `[perf]` to stderr: total wall-clock, model-call count, and total **in / out**
+(prompt / generated) tokens — then a **per-call breakdown** (label `[action]`/`[annotate]`/
+`[summary]`/`[eli10]`/`[explain]`, duration, in/out). A deterministic run (`--no-llm`, no
+`--summary`/`--annotate`) shows `0 model calls`. On CPU the bulk of the time is the model
+processing/generating tokens — the Roslyn path-finding itself is fast.
 
 ---
 
@@ -172,6 +207,9 @@ This is why the model "driving badly" is fine — Roslyn delivers the path eithe
 | `--depth` | 1 | explain call-chain depth; `0` = fastest (just the method), higher = deeper logic |
 | `--max-methods` | 8 | cap on methods explained in the chain — raise to go deeper/wider |
 | `--all-paths` | off | trace: enumerate ALL paths (brute force), not just the first |
+| `--with-bodies` / `--annotate` | off | trace: code between hops · per-hop LLM "why" note |
+| `--summary` | off | trace: final summary + plain-words recap |
+| `--from` / `--to` | — | trace: path between two concrete methods (direct mode) |
 | `--no-llm` | off | trace without the model — fastest, fully deterministic |
 | `-m, --model` | gemma4:latest | swap models; smaller ones are faster but may fill the trace schema worse |
 
