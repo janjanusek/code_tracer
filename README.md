@@ -12,6 +12,11 @@ It answers the two questions you keep asking in legacy code:
 - **"What does this code actually do?"** → **`explain`** walks a method (and, as deep as you
   ask, its call chain) and explains it step by step, ending with a plain-words recap.
 
+Every result also ends with an **auto-generated `## Call-flow` diagram** — a high-level map of
+what the analysis found (the path / call-tree), drawn as **ASCII** (readable in any viewer, even
+a locked-down wiki) **and** **Mermaid** (renders as graphics on GitHub / VS Code). Deterministic,
+no extra model call — so you grasp the shape before reading a word of prose.
+
 Roslyn does the **precise** analysis (symbols, references, call graph) — nothing is guessed by
 the model; the model only **explains the code it is given**.
 
@@ -133,6 +138,17 @@ iteratively prompting the model for corrections (1 initial + 2 correction attemp
 ## End-to-end logic
 (how a request flows L0 → L1 → L2 and back: the schema-constrained call, validation,
  the correction loop, and the deterministic escalation when the model can't comply)
+
+## In plain words
+(the same, re-stated for a 10-year-old — plain words, no jargon)
+
+## Call-flow        ← auto-generated, deterministic (also emitted as a Mermaid graph)
+Agent.GetAction   ◆ start      Agent.cs:241
+├─► LlmClient.ChatAsync        LlmClient.cs:87
+│   ├─► LlmClient.BuildOllama  LlmClient.cs:136
+│   ├─► LlmClient.BuildOpenAI  LlmClient.cs:159
+│   └─► LlmClient.Truncate     LlmClient.cs:201
+└─► Agent.ValidateArgs         Agent.cs:293
 ```
 
 **→ Full examples in the repo:**
@@ -186,6 +202,21 @@ PATH FOUND (4 nodes):
 ...
 ### Path 9:  Agent.RunAsync  ->  RoslynIndex.FindCallers
   1. Agent.RunAsync   →   2. Agent.TryAutoPath   →   3. RoslynIndex.FindCallers
+```
+
+…and the result ends with a **`## Call-flow`** map of all those paths merged — the fan-out drawn
+as a branching tree (ASCII) plus a Mermaid graph. For a DI interface with several implementations
+that each reach the target, this is the "from the side" view of every candidate at once (see
+[`examples/trace-di-multiple-impls.md`](examples/trace-di-multiple-impls.md)):
+
+```text
+NotificationService.Notify   ◆ start  Services.cs:10
+├─► EmailNotifier.Send                Notifications.cs:13
+│   └─► Audit.Record   ★ target       Audit.cs:8
+├─► SmsNotifier.Send                  Notifications.cs:23
+│   └─► Audit.Record   ★ target       Audit.cs:8
+└─► LoggingNotifier.Send  (decorator) Notifications.cs:36
+    └─► Audit.Record   ★ target       Audit.cs:8
 ```
 
 **→ Full example in the repo:** [`examples/trace-agent-to-roslynindex.md`](examples/trace-agent-to-roslynindex.md)
@@ -340,4 +371,51 @@ LlmClient.cs     HTTP client: Ollama /api/chat (structured outputs) + OpenAI-com
 RoslynIndex.cs   Roslyn analysis: symbols, call graph, find_path, BuildMethodContext (+deps)
 Agent.cs         trace: ReAct loop, token-level JSON, bootstrap + auto-escalation
 Explainer.cs     explain: compact method context -> explanation (+ block-splitting long methods)
+Diagram.cs       the auto "## Call-flow" diagram (ASCII + Mermaid) of what the analysis found
 ```
+
+---
+
+## See a complete run
+
+Want the full picture before installing anything? These two example files are **real, unedited
+runs against CodeTracer's own source** — open them and you see exactly what you get:
+
+- **[`examples/explain-deep-runasync.md`](examples/explain-deep-runasync.md)** — a deep + wide
+  `explain` (12 methods, 3 levels): every method explained, an end-to-end synthesis, an "In plain
+  words" recap, and the `## Call-flow` diagram. The whole codebase logic, in one file.
+- **[`examples/trace-di-multiple-impls.md`](examples/trace-di-multiple-impls.md)** — DI through an
+  interface with 3 implementations + a decorator: every path enumerated, drawn as a branching
+  Call-flow.
+
+The [`examples/`](examples) folder has the rest (with bodies, annotations, summaries). Every run
+also **auto-saves** (no `--out` needed) and **saves incrementally**, so a long deep run is never
+lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and keep what's done.
+
+---
+
+## Need help with this — or want it inside your enterprise?
+
+CodeTracer exists because so many teams are stuck in exactly this spot: a huge, old C# codebase on
+a locked-down machine — no GPU, no cloud AI allowed. If you'd like help **applying it to your own
+codebase**, or **adapting the approach** (Roslyn as the source of truth + a small local model)
+inside your organisation, I offer consulting.
+
+<img src="docs/jan-janusek.jpg" alt="Ján Janušek" width="128" align="left" hspace="16" vspace="4" />
+
+**Ing. Ján Janušek** — CEO & Founder
+
+Builder of practical, **privacy-first** AI that runs where the data lives:
+
+- **Reality Radar** — monitoring 90% of the real-estate market · operated by **AI Unlimited Ltd** — [realityradar.eu](https://www.realityradar.eu)
+- **Meeting Buddy** — a **100% private** meeting assistant — [meeting-buddy.com](https://meeting-buddy.com)
+- 💼 LinkedIn: [linkedin.com/in/janjanusek](https://www.linkedin.com/in/janjanusek)
+
+<br clear="left" />
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Ján Janušek (AI Unlimited Ltd). Use it, fork it, ship it — no GPU, no cloud,
+no strings.

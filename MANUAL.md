@@ -69,6 +69,8 @@ dotnet run -- explain -s App.sln --method "TaxEngine.Calculate" --depth 3 --out 
 - Long methods (> 400 lines) are explained **block by block**, then summarized.
 - Every explanation ends with an **"In plain words"** recap — a short, jargon-free "explain
   like I'm 10" version of what the code is for and what the point of it is.
+- …and then a **`## Call-flow`** diagram (ASCII + Mermaid) of the call-tree it walked — see
+  [§ Call-flow diagram](#7-call-flow-diagram-automatic). Deterministic, no extra model call.
 
 ### Properties
 
@@ -114,13 +116,19 @@ loop is a fallback for the rare purely-dynamic cases. The output is the path, ho
 | `--no-llm` | deterministic only — no model (works even if Ollama is down) |
 | `--out <file>` | save the result to a file |
 
+Every trace result also **ends with a `## Call-flow` diagram** (ASCII + Mermaid) of the path it
+found — automatic, deterministic, no flag needed. See
+[§ Call-flow diagram](#7-call-flow-diagram-automatic).
+
 The full experience:
 ```bash
 dotnet run -- trace -s App.sln --from "OrdersController.Create" --to "PricingEngine.Compute" \
   --with-bodies --annotate --summary --repo-url https://github.com/you/repo/blob/main --out walk.md
 ```
-See `examples/` for real output: `trace-with-bodies.md`, `trace-with-bodies-annotated.md`,
-`trace-agent-to-roslynindex.md` (all paths).
+…gives you, in one file: the code between every hop, a "why" note per hop, a Summary, an "In
+plain words" recap, **and** the Call-flow diagram. See `examples/` for real output:
+`trace-with-bodies.md`, `trace-with-bodies-annotated.md`, `trace-agent-to-roslynindex.md` (all
+paths), `trace-di-multiple-impls.md` (DI fan-out drawn as a branching tree).
 
 ### DI, interfaces & multiple implementations
 
@@ -199,11 +207,98 @@ Roslyn is still the source of truth — the warning just makes the choice visibl
 
 ---
 
-## 7. Performance (the `[perf]` line)
+## 7. Call-flow diagram (automatic)
 
-Every run prints a `[perf]` line to stderr with total wall-clock, model-call count, and token
-usage. With more than one model call it also breaks it down **per call** — label, duration, and
-**in / out** tokens (input/prompt vs generated):
+Both `explain` and `trace` finish their result with a **`## Call-flow`** section: a high-level map
+of what the analysis found, so you grasp the *shape* before reading the prose. It's **automatic**
+(no flag), **deterministic** (built straight from Roslyn — no extra model call), and rendered
+**two ways** so it's useful everywhere:
+
+- an **ASCII** block (in a ` ```text ` fence) — renders identically in any viewer, even a
+  locked-down corporate wiki, Notepad, or an offline `.md`;
+- a **Mermaid** block (` ```mermaid `) — renders as real graphics on GitHub / VS Code.
+
+The **start** node is tagged `◆ start`, the **target / leaf** `★ target`, and every node carries
+its `file:line`. The layout adapts to what was found:
+
+- **`trace`, one straight path** → vertical boxes:
+
+  ```text
+  ┌────────────────────────────┐
+  │ Agent.RunAsync   ◆ start   │   Agent.cs:118
+  └──────────────┬─────────────┘
+                 ▼  calls
+  ┌────────────────────────────┐
+  │ RoslynIndex.Rel   ★ target │   RoslynIndex.cs:38
+  └────────────────────────────┘
+  ```
+
+- **`trace --all-paths`** (e.g. a DI interface with several implementations) or **`explain`'s
+  call-tree** → an indented tree that shows the fan-out and where branches converge:
+
+  ```text
+  NotificationService.Notify   ◆ start  Services.cs:10
+  ├─► EmailNotifier.Send                Notifications.cs:13
+  │   └─► Audit.Record   ★ target       Audit.cs:8
+  ├─► SmsNotifier.Send                  Notifications.cs:23
+  │   └─► Audit.Record   ★ target       Audit.cs:8
+  └─► LoggingNotifier.Send              Notifications.cs:36
+      └─► Audit.Record   ★ target       Audit.cs:8
+  ```
+
+See `examples/trace-di-multiple-impls.md` and `examples/explain-agent-getaction.md` for the full
+ASCII + Mermaid output.
+
+---
+
+## 8. Reading the console output (logs, pre-flight, `[perf]`)
+
+Everything CodeTracer prints **while it works** goes to **stderr** as short tagged lines (so it
+never pollutes the `--out` file, which is stdout). Here's what each tag means.
+
+### What "pre-flight" is
+
+In `trace`, **pre-flight** is the deterministic attempt that runs **before any model is involved**.
+From your endpoint and target, CodeTracer builds a list of **candidate pairs** — `(fromClass,
+fromMethod) → (toClass, toMethod)` guesses for where the path might start and end (for a Razor
+page it knows the handler is `OnGet/OnPost…`, etc.) — and runs the exact `find_path` (a breadth-
+first search up the call graph in Roslyn) over them. If any pair connects, you get the real path
+with **zero model calls**. Only if none connect does it "hand over to the model loop". So:
+
+```
+[pre-flight] deterministic find_path over 24 candidate pairs [first path]...
+[pre-flight] no direct path - handing over to the model loop...
+```
+means: it tried 24 start/end guesses deterministically, none linked up, so the model will now
+navigate. `[first path]` = stop at the first connecting pair; `[brute-force (all paths)]` =
+(`--all-paths`) enumerate every path instead.
+
+### The log tags
+
+| tag | when | what it means |
+|---|---|---|
+| `[cfg]` | startup | the resolved config — mode, API URL, api-style, model, key options. Also `[cfg] Ollama version: …` |
+| `[pre-flight]` | trace | the deterministic `find_path` over candidate pairs (see above), before the model |
+| `[direct]` | trace | `--from/--to` mode: the single `find_path` (or all-paths) between the two methods you named |
+| `===== STEP n =====` | trace | the model loop: step *n*, printing the model's raw JSON action (`{"tool":…}`) |
+| `--- OBSERVATION ---` | trace | the tool output that step produced — what the model "sees" next |
+| `[!]` | trace | a guard fired: a repeated step, or the step limit was hit — it's about to fall back |
+| `[auto]` | trace | deterministic escalation: the model stalled/looped, so the cached pre-flight result is used |
+| `[summary]` | trace | the optional `--summary` pass is running (one model call) |
+| `========== DONE (reason) ==========` | trace | the final result; `reason` = how it was obtained (`pre-flight` / `brute-force` / `finish` / `auto` / `direct` …) |
+| `[explain] building call chain …` | explain | Roslyn is assembling the method chain (`depth=…, max-methods=…`) before any explaining |
+| `[explain] (i/N) Lx Method … · ~Xm left` | explain | explaining method *i* of *N*; the **ETA** is averaged from the methods already done |
+| `[explain] synthesizing end-to-end logic …` | explain | the final pass that ties the per-method explanations together |
+| `[explain] block b/B …` | explain | a >400-line method is being explained block by block |
+| `[warn]` | both | a non-fatal note — e.g. an **ambiguous** `Class.Method` (it lists the matches and uses the first) |
+| `[perf]` | both | the performance summary (below) |
+| `[error]` / `[write error]` | both | a fatal problem (bad args, solution failed to load, couldn't write `--out`) |
+
+### The `[perf]` line
+
+Every run ends with a `[perf]` summary: total wall-clock, model-call count, and token usage. With
+more than one model call it also breaks it down **per call** — label, duration, and **in / out**
+tokens (input/prompt vs generated):
 
 ```
 [perf] 146.4s total · 5 model call(s) · in 9210 / out 1840 tokens (gemma4:latest)
@@ -212,12 +307,31 @@ usage. With more than one model call it also breaks it down **per call** — lab
 [perf]   call 5 [summary]: 121.0s · in 4194 / out 732
 ```
 
-A deterministic run (`--no-llm`, no `--summary`/`--annotate`) shows `0 model calls`. Most of the
-time on CPU is the model generating/processing tokens — the Roslyn path-finding itself is fast.
+The per-call **label** matches the work: `[action]` (trace's tool picks), `[annotate]`,
+`[summary]`, `[explain]`, `[eli10]` (the "In plain words" pass). A deterministic run (`--no-llm`,
+no `--summary`/`--annotate`) shows `0 model calls`. Most of the time on CPU is the model
+generating/processing tokens — the Roslyn analysis itself is fast.
+
+### Auto-save, live progress & stopping early
+
+A long deep run is **never lost**, even if you forget `--out`:
+
+- **Auto-save (default on, no flag).** If you don't pass `--out`, the result is still saved — to a
+  discoverable file in the current directory: `codetracer-explain-<Class.Method>.md` /
+  `codetracer-trace-<from>-to-<to>.md`. Pass `--out <file>` to choose the path instead.
+- **Incremental save.** In `explain`, the file is flushed **after every method** (and after the
+  synthesis / plain-words / call-flow). So at any moment the file holds everything finished so far.
+- **Watch it live.** Because it's written progressively, you can open the file **read-only** and
+  watch the knowledge accumulate — e.g. `Get-Content codetracer-explain-*.md -Wait` (PowerShell)
+  or `tail -f` (bash).
+- **Live ETA.** Each `[explain] (i/N) …` line shows `· ~Xm left`, averaged from the methods
+  already done (remaining work = methods left + the synthesis pass).
+- **Stop early with `Ctrl+C`.** "I'm out of time — give me what you have": it cancels the in-flight
+  model call, keeps the partial file (everything finished before the stop), and exits cleanly.
 
 ---
 
-## 8. All options
+## 9. All options
 
 | option | command | default | meaning |
 |---|---|---|---|
@@ -249,7 +363,7 @@ time on CPU is the model generating/processing tokens — the Roslyn path-findin
 
 ---
 
-## 9. Model-free / offline
+## 10. Model-free / offline
 
 Roslyn does the exact work; the model is optional. Fully model-free workflows (work even if
 Ollama is not running):
@@ -265,7 +379,7 @@ dotnet run -- explain -s App.sln --method "Some.Method" --depth 10 --max-methods
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 - **Solution won't load** → run `dotnet restore` + `dotnet build` on the *target* solution first.
   `[workspace] …` warnings during load are normal.

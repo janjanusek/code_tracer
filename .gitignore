@@ -33,3 +33,10 @@ Thumbs.db
 # Keep the docs (README.md, AGENT.md, HOW_IT_WORKS.md); ignore ad-hoc outputs:
 explain_*.md
 *.explain.md
+
+# ---- auto-saved results when --out is omitted (default-on safety net) ----
+codetracer-*.md
+
+# ---- scratch files from local runs ----
+_*.md
+_*.err

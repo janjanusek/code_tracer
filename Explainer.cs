@@ -14,15 +14,17 @@ public class Explainer
     private readonly double _temperature;
     private readonly int _blockThreshold;
     private readonly string? _repoUrl;
+    private readonly CancellationToken _ct;
 
     public Explainer(LlmClient llm, int numPredict = 2048, double temperature = 0.2,
-                     string? repoUrl = null, int blockThreshold = 400)
+                     string? repoUrl = null, int blockThreshold = 400, CancellationToken ct = default)
     {
         _llm = llm;
         _numPredict = numPredict;
         _temperature = temperature;
         _repoUrl = repoUrl;
         _blockThreshold = blockThreshold;
+        _ct = ct;
     }
 
     /// "relpath:line" -> clickable markdown link to the repo (if repoUrl is set), otherwise plain text.
@@ -42,7 +44,8 @@ public class Explainer
         "20-year-old system. Explain in clear, plain English. Do not invent anything - stick to " +
         "the code you are given.";
 
-    public async Task<string> ExplainAsync(MethodContext ctx, string? goal, string? question = null)
+    public async Task<string> ExplainAsync(MethodContext ctx, string? goal, string? question = null,
+                                            string? outPath = null)
     {
         // Self-describing header - so that a saved .md makes sense on its own (for colleagues).
         var sb = new StringBuilder();
@@ -58,6 +61,7 @@ public class Explainer
             ? await ExplainByBlocks(ctx, question)     // long methods: block by block + summary
             : await Ask(BuildUserPrompt(ctx, ctx.Source, question));
         sb.AppendLine(explanation.Trim());
+        await FlushPartial(sb, outPath);
 
         var simple = await SimplifyForKid(explanation);   // a second, plain-words pass
         if (!string.IsNullOrWhiteSpace(simple))
@@ -67,12 +71,23 @@ public class Explainer
             sb.AppendLine(simple.Trim());
         }
 
+        // A high-level map: this method and the in-solution methods it calls.
+        var flow = Diagram.Section(Diagram.FromChain(new (int, MethodContext)[] { (0, ctx) }),
+            "What this method calls");
+        if (!string.IsNullOrWhiteSpace(flow))
+        {
+            sb.AppendLine();
+            sb.AppendLine(flow);
+        }
+        await FlushPartial(sb, outPath);
+
         if (!string.IsNullOrWhiteSpace(goal))
         {
             var proposal = await ProposeChange(ctx, goal!);
             sb.AppendLine();
             sb.AppendLine("## Change proposal");
             sb.AppendLine(proposal.Trim());
+            await FlushPartial(sb, outPath);
         }
         return sb.ToString();
     }
@@ -85,8 +100,13 @@ public class Explainer
         sb.AppendLine();
 
         var partial = new List<string>();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int b = 0;
         foreach (var (label, code) in blocks)
         {
+            b++;
+            // +1 remaining unit for the final stitch-together summary pass.
+            Console.Error.WriteLine($"[explain] block {b}/{blocks.Count} ({label}) ...{Eta(sw.Elapsed, b - 1, blocks.Count - (b - 1) + 1)}");
             var prompt = new StringBuilder();
             prompt.AppendLine(HeaderBlock(ctx));
             prompt.AppendLine($"Below is ONE BLOCK of the method ({label}). Explain in numbered steps what this block does.");
@@ -222,7 +242,7 @@ public class Explainer
             Temperature = _temperature,
             NumPredict = numPredict ?? _numPredict,
             // Format intentionally null - explain is free text (the model's strength), no grammar constraint.
-        }, label);
+        }, label, _ct);
     }
 
     /// A second, very simple "explain like I'm 10" pass over the explanation - in plain words,
@@ -239,15 +259,17 @@ public class Explainer
             {
                 new ChatMsg("system", "You explain technical things in very simple, plain language. No jargon."),
                 new ChatMsg("user", prompt)
-            }, new ChatOptions { Temperature = 0.3, NumPredict = 800, Think = false }, "eli10")).Trim();
+            }, new ChatOptions { Temperature = 0.3, NumPredict = 800, Think = false }, "eli10", _ct)).Trim();
         }
+        catch (OperationCanceledException) { throw; }   // a user Ctrl+C must stop, not be swallowed
         catch { return ""; }
     }
 
     /// Deep explain: explains the ENTIRE logic along the call chain. Each method in the chain is explained
     /// with a SEPARATE call (full attention, not a truncated snippet), followed by an end-to-end synthesis.
     public async Task<string> ExplainChainAsync(
-        IReadOnlyList<(int level, MethodContext ctx)> chain, string? goal, string? question)
+        IReadOnlyList<(int level, MethodContext ctx)> chain, string? goal, string? question,
+        string? outPath = null)
     {
         var root = chain[0].ctx;
         var sb = new StringBuilder();
@@ -258,23 +280,32 @@ public class Explainer
         sb.AppendLine($"_Deep explanation following the call chain ({chain.Count} methods)._");
         sb.AppendLine();
 
+        if (!string.IsNullOrWhiteSpace(outPath))
+            Console.Error.WriteLine($"[explain] writing partial results to {outPath} after each method " +
+                                    "(an interrupted run won't lose finished work).");
+
         // Each node is kept shorter (focused on its own method); synthesis gets the full budget.
         int nodeBudget = Math.Min(_numPredict, 1100);
         var notes = new List<string>();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int total = chain.Count;
         int i = 0;
         foreach (var (level, ctx) in chain)
         {
             i++;
-            Console.Error.WriteLine($"[explain] ({i}/{chain.Count}) L{level}  {ctx.Display} ...");
+            // Live ETA: average the methods already done; remaining work = methods left + the synthesis pass.
+            var eta = Eta(sw.Elapsed, i - 1, total - (i - 1) + 1);
+            Console.Error.WriteLine($"[explain] ({i}/{total}) L{level}  {ctx.Display} ...{eta}");
             var part = await Ask(BuildNodePrompt(ctx), nodeBudget);
             sb.AppendLine($"## L{level} · {ctx.Display}  ({LinkLoc(ctx.Location, _repoUrl)})");
             sb.AppendLine(part.Trim());
             sb.AppendLine();
             notes.Add($"L{level} {ctx.Display}: {Shorten(part, 500)}");
+            await FlushPartial(sb, outPath);              // persist after every method
         }
 
         // synthesis: how it all fits together from input to output
-        Console.Error.WriteLine("[explain] synthesizing end-to-end logic ...");
+        Console.Error.WriteLine($"[explain] synthesizing end-to-end logic ...{Eta(sw.Elapsed, total, 1)}");
         var synth = new StringBuilder();
         synth.AppendLine($"Entry method: {root.Display}  ({root.Signature}).");
         synth.AppendLine("Per-method explanations of the call chain (entry first):");
@@ -289,6 +320,7 @@ public class Explainer
         var synthText = await Ask(synth.ToString());
         sb.AppendLine("## End-to-end logic");
         sb.AppendLine(synthText.Trim());
+        await FlushPartial(sb, outPath);
 
         var simple = await SimplifyForKid(synthText);   // a second, plain-words pass
         if (!string.IsNullOrWhiteSpace(simple))
@@ -298,12 +330,23 @@ public class Explainer
             sb.AppendLine(simple.Trim());
         }
 
+        // A high-level map of what the analysis walked, so the reader sees the whole shape at a glance.
+        var flow = Diagram.Section(Diagram.FromChain(chain),
+            "How execution flows through the methods explained above");
+        if (!string.IsNullOrWhiteSpace(flow))
+        {
+            sb.AppendLine();
+            sb.AppendLine(flow);
+        }
+        await FlushPartial(sb, outPath);
+
         if (!string.IsNullOrWhiteSpace(goal))
         {
             var proposal = await ProposeChange(root, goal!);
             sb.AppendLine();
             sb.AppendLine("## Change proposal");
             sb.AppendLine(proposal.Trim());
+            await FlushPartial(sb, outPath);
         }
         return sb.ToString();
     }
@@ -324,6 +367,31 @@ public class Explainer
 
     private static string Shorten(string s, int max) =>
         s.Length <= max ? s.Trim() : s[..max].Trim() + " ...";
+
+    /// "  · ~Xm left" estimated from the average time of the work already done. Empty until we have
+    /// at least one timed step (no point guessing from nothing). `remainingUnits` = passes still to run.
+    private static string Eta(TimeSpan elapsed, int done, int remainingUnits)
+    {
+        if (done <= 0 || remainingUnits <= 0) return "";
+        var perUnit = elapsed.TotalSeconds / done;
+        return $"  · ~{FmtDuration(TimeSpan.FromSeconds(perUnit * remainingUnits))} left";
+    }
+
+    private static string FmtDuration(TimeSpan t)
+    {
+        if (t.TotalSeconds < 60) return $"{Math.Ceiling(t.TotalSeconds)}s";
+        if (t.TotalMinutes < 60) return $"{(int)t.TotalMinutes}m {t.Seconds}s";
+        return $"{(int)t.TotalHours}h {t.Minutes}m";
+    }
+
+    /// Writes the result-so-far to disk. Best-effort: a transient write failure (file locked, etc.)
+    /// must never abort a long run, so it's swallowed - the next flush, or the final write, will retry.
+    private static async Task FlushPartial(StringBuilder sb, string? outPath)
+    {
+        if (string.IsNullOrWhiteSpace(outPath)) return;
+        try { await File.WriteAllTextAsync(outPath!, sb.ToString()); }
+        catch { /* ignore - partial-save is a safety net, not a hard requirement */ }
+    }
 
     /// --no-llm: renders the Roslyn-extracted context (method + call-chain + sources)
     /// to markdown WITHOUT calling the model. Output is ready to paste into a larger model.
@@ -349,6 +417,10 @@ public class Explainer
                 sb.AppendLine($"↳ full method / file: {LinkLoc(ctx.Location, repoUrl)}");
             sb.AppendLine();
         }
+
+        var flow = Diagram.Section(Diagram.FromChain(chain), "How these methods connect");
+        if (!string.IsNullOrWhiteSpace(flow))
+            sb.AppendLine(flow);
         return sb.ToString();
     }
 }

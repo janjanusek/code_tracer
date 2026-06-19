@@ -172,3 +172,92 @@ analysis operations** using Roslyn. It acts as an abstraction layer that lets th
 *   **Path variation:** the variation (e.g. Path 1 vs. Path 2) shows that even for similar goals
     (looking up a symbol), different internal methods (`FindSymbol` vs. `GetMethod`) are used
     depending on the query.
+
+All 15 paths merged into one **`## Call-flow`** map — the auto-generated diagram that ends
+every trace. Each branch is a way `Agent.RunAsync` reaches a method in `RoslynIndex`; the
+`★ target` markers sit on the leaves where the chains actually bottom out:
+
+## Call-flow
+_The path the analysis found — deterministic, straight from Roslyn (no model)._
+
+```text
+Agent.RunAsync   ◆ start                                Agent.cs:118
+├─► Agent.Dispatch                                      Agent.cs:563
+│   ├─► RoslynIndex.FindSymbol                          RoslynIndex.cs:157
+│   │   ├─► RoslynIndex.Rel   ★ target                  RoslynIndex.cs:38
+│   │   └─► RoslynIndex.FindDeclarations   ★ target     RoslynIndex.cs:56
+│   ├─► RoslynIndex.GetMethod                           RoslynIndex.cs:171
+│   │   ├─► RoslynIndex.Sig   ★ target                  RoslynIndex.cs:46
+│   │   ├─► RoslynIndex.ResolveMethod                   RoslynIndex.cs:76
+│   │   │   └─► RoslynIndex.WarnIfAmbiguous   ★ target  RoslynIndex.cs:100
+│   │   └─► RoslynIndex.GetBody   ★ target              RoslynIndex.cs:111
+│   ├─► RoslynIndex.Outline   ★ target                  RoslynIndex.cs:125
+│   ├─► RoslynIndex.FindCallees   ★ target              RoslynIndex.cs:202
+│   ├─► RoslynIndex.FindReferences   ★ target           RoslynIndex.cs:225
+│   ├─► RoslynIndex.ReadFile   ★ target                 RoslynIndex.cs:241
+│   └─► RoslynIndex.Grep   ★ target                     RoslynIndex.cs:254
+└─► Agent.TryAutoPath                                   Agent.cs:471
+    ├─► RoslynIndex.FindPath                            RoslynIndex.cs:281
+    │   └─► RoslynIndex.RenderPath                      RoslynIndex.cs:416
+    │       └─► RoslynIndex.SigNamed   ★ target         RoslynIndex.cs:50
+    └─► RoslynIndex.FindCallers   ★ target              RoslynIndex.cs:183
+```
+
+```mermaid
+flowchart TD
+    n0["Agent.RunAsync"]
+    n1["Agent.Dispatch"]
+    n2["RoslynIndex.FindSymbol"]
+    n3["RoslynIndex.Rel"]
+    n4["RoslynIndex.GetMethod"]
+    n5["RoslynIndex.Sig"]
+    n6["Agent.TryAutoPath"]
+    n7["RoslynIndex.FindPath"]
+    n8["RoslynIndex.RenderPath"]
+    n9["RoslynIndex.SigNamed"]
+    n10["RoslynIndex.FindDeclarations"]
+    n11["RoslynIndex.ResolveMethod"]
+    n12["RoslynIndex.WarnIfAmbiguous"]
+    n13["RoslynIndex.GetBody"]
+    n14["RoslynIndex.Outline"]
+    n15["RoslynIndex.FindCallers"]
+    n16["RoslynIndex.FindCallees"]
+    n17["RoslynIndex.FindReferences"]
+    n18["RoslynIndex.ReadFile"]
+    n19["RoslynIndex.Grep"]
+    n0 --> n1
+    n1 --> n2
+    n2 --> n3
+    n1 --> n4
+    n4 --> n5
+    n0 --> n6
+    n6 --> n7
+    n7 --> n8
+    n8 --> n9
+    n2 --> n10
+    n4 --> n11
+    n11 --> n12
+    n4 --> n13
+    n1 --> n14
+    n6 --> n15
+    n1 --> n16
+    n1 --> n17
+    n1 --> n18
+    n1 --> n19
+    classDef entry fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a,stroke-width:2px;
+    classDef target fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px;
+    class n0 entry;
+    class n3 target;
+    class n5 target;
+    class n9 target;
+    class n10 target;
+    class n12 target;
+    class n13 target;
+    class n14 target;
+    class n15 target;
+    class n16 target;
+    class n17 target;
+    class n18 target;
+    class n19 target;
+```
+

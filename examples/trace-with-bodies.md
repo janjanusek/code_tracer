@@ -76,3 +76,43 @@ _call site: [RoslynIndex.cs:138](https://github.com/janjanusek/code_tracer/blob/
    43          return $"{path}:{span.StartLinePosition.Line + 1}";
    44      }
 ```
+
+Every trace result ends with an auto-generated **`## Call-flow`** diagram. A single straight path
+is drawn as vertical boxes (ASCII, readable anywhere) plus a Mermaid block that renders as
+graphics on GitHub / VS Code:
+
+## Call-flow
+_The path the analysis found — deterministic, straight from Roslyn (no model)._
+
+```text
+┌────────────────────────────┐
+│ Agent.RunAsync   ◆ start   │   Agent.cs:118
+└──────────────┬─────────────┘
+               ▼  calls
+┌────────────────────────────┐
+│ Agent.Dispatch             │   Agent.cs:563
+└──────────────┬─────────────┘
+               ▼  calls
+┌────────────────────────────┐
+│ RoslynIndex.FindSymbol     │   RoslynIndex.cs:157
+└──────────────┬─────────────┘
+               ▼  calls
+┌────────────────────────────┐
+│ RoslynIndex.Rel   ★ target │   RoslynIndex.cs:38
+└────────────────────────────┘
+```
+
+```mermaid
+flowchart TD
+    n0["Agent.RunAsync"]
+    n1["Agent.Dispatch"]
+    n2["RoslynIndex.FindSymbol"]
+    n3["RoslynIndex.Rel"]
+    n0 --> n1
+    n1 --> n2
+    n2 --> n3
+    classDef entry fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a,stroke-width:2px;
+    classDef target fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px;
+    class n0 entry;
+    class n3 target;
+```

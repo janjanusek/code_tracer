@@ -327,6 +327,11 @@ fall back to find_callers from the target going UP one hop at a time, then finis
     private async Task Finish(string pathText, string reason)
     {
         var output = pathText.Trim();
+
+        // Built from the CLEAN path text (before any summary prose is appended), so the diagram
+        // reflects only the discovered call-path. Appended at the very end of the result.
+        var flow = Diagram.Section(Diagram.FromTraceText(output), "The path the analysis found");
+
         if (_summarize && output.Contains("PATH FOUND"))
         {
             Console.Error.WriteLine("[summary] summarizing the chain...");
@@ -339,6 +344,9 @@ fall back to find_callers from the target going UP one hop at a time, then finis
                     output += "\n\n## In plain words\n" + simple.Trim();
             }
         }
+
+        if (!string.IsNullOrWhiteSpace(flow))
+            output += "\n\n" + flow;
 
         Console.WriteLine($"\n========== DONE ({reason}) ==========");
         Console.WriteLine(output);

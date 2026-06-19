@@ -44,6 +44,7 @@ Roslyn result. That's the whole architecture in one sentence.
 | `LlmClient.cs` | HTTP to Ollama `/api/chat` (structured outputs) or an OpenAI-compatible server |
 | `Agent.cs` | trace mode: deterministic pre-flight, the model loop, JSON enforcement, escalation |
 | `Explainer.cs` | explain mode: per-method prompts, deep call-chain walk + end-to-end synthesis |
+| `Diagram.cs` | the `## Call-flow` diagram (ASCII + Mermaid) of what the analysis found — deterministic |
 
 Startup detail: `MSBuildLocator.RegisterDefaults()` must run **before** any Roslyn/MSBuild
 type is touched, so all real work lives in methods, not inline in `Program.cs`.
@@ -93,6 +94,8 @@ the synthesis gets the full cap), `--temperature` (default 0.2).
   explained block-by-block, then a final summary call stitches it together.
 - Every explanation ends with an **`## In plain words`** recap — a cheap second pass that
   re-states it for a 10-year-old (plain words, no jargon).
+- …and then a **`## Call-flow`** diagram (see below): the call-tree the explanation walked, so
+  the reader sees the whole shape at a glance. Deterministic — no extra model call.
 - The output always starts with a self-describing header (method, location, signature) so a
   saved `.md` makes sense on its own.
 
@@ -167,9 +170,38 @@ This is why the model "driving badly" is fine — Roslyn delivers the path eithe
   turns every `file:line` into a link.
 - **`--summary`** appends a final Summary (purpose / dependencies / good-to-know) and a second,
   plain-words **"In plain words"** recap — a cheap second pass over the summary just produced.
+- Every trace result then ends with a **`## Call-flow`** diagram (see below), built in `Finish`
+  from the *clean* path text (before any summary prose), so it reflects only the discovered path.
 
 The model's own `find_path` calls (inside the loop) always use the compact, no-bodies format, so
 observations stay small; the rich rendering only applies to the deterministic result the user sees.
+
+---
+
+## The `## Call-flow` diagram — a map of what was found
+
+Both modes finish with a deterministic, model-free diagram of the discovered flow (`Diagram.cs`),
+so an engineer grasps the *shape* before reading the prose. It is rendered **two ways** at once:
+
+- an **ASCII** block (in a ` ```text ` fence) that renders identically in any viewer — a corporate
+  wiki, Notepad, an offline `.md` — so it's never a blank box on a locked-down machine;
+- a **Mermaid** block (` ```mermaid `) that renders as real graphics on GitHub / VS Code.
+
+The **entry** is tagged `◆ start`, the **target / leaf** `★ target`, and every node carries its
+`file:line`. The layout adapts to the finding:
+
+- a single straight path (`trace` default) → **vertical boxes** (the README look);
+- a branching shape — a `trace --all-paths` fan-out (e.g. one branch per DI implementation,
+  converging on the target) or an `explain` call-tree — → an **indented tree**.
+
+How each mode feeds it:
+- **explain** builds the graph straight from the explained chain (`Diagram.FromChain`); edges stay
+  *within* the chain for a clean tree, and for a single method (`--depth 0`) its in-solution
+  callees are shown as leaves so it isn't a lone box.
+- **trace** parses the rendered path text (`Diagram.FromTraceText`) — works for every mode
+  (compact, `--with-bodies`, `--all-paths`) because it reads the same numbered hops the user sees.
+
+Both are bounded (a hard cap on rows / leaves) so a huge graph can't explode the output.
 
 ---
 

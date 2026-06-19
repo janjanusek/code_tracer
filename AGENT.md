@@ -6,7 +6,8 @@ nothing more. Don't explain the code — CodeTracer itself does that.
 
 CodeTracer is a local tool (Roslyn + a small model via Ollama, CPU-only, no cloud). It has
 **two modes**: `explain` (understand a method + its dependencies) and `trace` (find the whole
-call chain).
+call chain). Every result automatically ends with a **`## Call-flow`** diagram (ASCII + Mermaid)
+of what the analysis found — this is built in, **no flag to add**.
 
 ---
 

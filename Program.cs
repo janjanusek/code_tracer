@@ -43,8 +43,16 @@ static async Task<int> RunTrace(Options opts)
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
 
+    // Auto-save the result if --out wasn't given (default ON), so a trace is never lost for lack of a flag.
+    bool autoOut = string.IsNullOrWhiteSpace(opts.Out);
+    var traceLabel = direct ? $"{opts.From}-to-{opts.To}"
+                            : $"{opts.Endpoint}-to-{Path.GetFileNameWithoutExtension(opts.TargetFile)}";
+    var outPath = autoOut ? AutoOutPath("trace", traceLabel) : opts.Out!;
+    if (autoOut)
+        Console.Error.WriteLine($"[trace] auto-saving result to {outPath}  (pass --out <file> to choose the path)");
+
     var agent = new Agent(llm, index, opts.MaxSteps, opts.Summary, opts.UseLlm, opts.AllPaths,
-                          opts.WithBodies || opts.Annotate, opts.Annotate, opts.RepoUrl, opts.Out);
+                          opts.WithBodies || opts.Annotate, opts.Annotate, opts.RepoUrl, outPath);
 
     if (direct)
     {
@@ -62,6 +70,17 @@ static async Task<int> RunTrace(Options opts)
 
     ReportPerf(llm, sw);
     return 0;
+}
+
+// A discoverable default output path, used when --out is not given so a run is never lost.
+// e.g. ("explain", "Agent.GetAction") -> "codetracer-explain-Agent.GetAction.md" in the current dir.
+static string AutoOutPath(string kind, string? label)
+{
+    var safe = new string((label ?? "out")
+        .Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_').ToArray());
+    if (string.IsNullOrWhiteSpace(safe)) safe = "out";
+    if (safe.Length > 80) safe = safe[..80];
+    return $"codetracer-{kind}-{safe}.md";
 }
 
 // "Namespace.Class.Method" / "Class.Method" -> (Class, Method) using the last two segments.
@@ -144,6 +163,12 @@ static async Task<int> RunExplain(Options opts)
         return 1;
     }
 
+    // Where to save. If the user didn't pass --out, auto-pick a discoverable path so a long run is
+    // NEVER lost just because a flag was forgotten — partial results are flushed as it goes (default ON).
+    bool autoOut = string.IsNullOrWhiteSpace(opts.Out);
+    var label = cls != null ? $"{cls}.{method}" : $"{Path.GetFileNameWithoutExtension(opts.File)}-L{opts.Line}";
+    var outPath = autoOut ? AutoOutPath("explain", label) : opts.Out!;
+
     string text;
     if (!opts.UseLlm)
     {
@@ -153,24 +178,48 @@ static async Task<int> RunExplain(Options opts)
     }
     else
     {
-        var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2, opts.RepoUrl);
-        text = opts.Depth <= 0
-            ? await explainer.ExplainAsync(chain[0].ctx, opts.Goal, opts.Question)
-            : await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question);
+        // Ctrl+C = "I'm out of time — give me what you have": cancel the in-flight call and keep the
+        // partial file (flushed after every method). Open it read-only to watch the knowledge fill in.
+        using var cts = new CancellationTokenSource();
+        ConsoleCancelEventHandler onCancel = (_, e) =>
+        {
+            e.Cancel = true;          // don't hard-kill — let us stop cleanly and keep the partial file
+            cts.Cancel();
+            Console.Error.WriteLine("\n[cancel] stopping — your partial result is already saved ...");
+        };
+        Console.CancelKeyPress += onCancel;
+        if (autoOut)
+            Console.Error.WriteLine($"[explain] auto-saving to {outPath}  (open it read-only to watch progress; " +
+                                    "Ctrl+C stops and keeps what's done)");
+        try
+        {
+            var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2, opts.RepoUrl, ct: cts.Token);
+            text = opts.Depth <= 0
+                ? await explainer.ExplainAsync(chain[0].ctx, opts.Goal, opts.Question, outPath)
+                : await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question, outPath);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Error.WriteLine($"[explain] stopped early — partial result saved to {outPath} " +
+                                    "(every method that finished before you stopped is in it).");
+            ReportPerf(llm, sw);
+            return 0;
+        }
+        finally { Console.CancelKeyPress -= onCancel; }
     }
 
     Console.WriteLine();
     Console.WriteLine(text.Trim());
 
-    if (!string.IsNullOrWhiteSpace(opts.Out))
+    try
     {
-        try
-        {
-            await File.WriteAllTextAsync(opts.Out!, text);
-            Console.Error.WriteLine($"[explain] saved to {opts.Out}");
-        }
-        catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
+        await File.WriteAllTextAsync(outPath, text);
+        Console.Error.WriteLine(autoOut
+            ? $"[explain] saved to {outPath}  (pass --out <file> to choose the path)"
+            : $"[explain] saved to {outPath}");
     }
+    catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
+
     ReportPerf(llm, sw);
     return 0;
 }
