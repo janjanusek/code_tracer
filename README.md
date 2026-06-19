@@ -102,6 +102,12 @@ body, full attention), then a final **end-to-end synthesis** ties the layers tog
 non-trivial code you get real depth, layer by layer. `--depth 0` = just the method, one fast
 call. To go deeper/wider on spaghetti, **raise `--max-methods`** (each method = one model call).
 
+**The real source is shown with the explanation.** Each method's code appears (a ```csharp
+block) right under its heading, and in a deep chain it's **indented by call-depth** so the
+nesting reads like the Call-flow tree — you see the code, what it does, and how the calls nest,
+together. The whole point: a dev who has **never seen the codebase** gets, in one read, what
+would otherwise take days of cold-reading. Pass **`--no-code`** for prose only.
+
 Add **`--question "…"`** (alias `--ask`) to point at the code and ask something specific —
 it's answered first, before the general walkthrough. If a single method is extremely long
 (> 400 lines) it's split into **logical blocks**, explained block by block, with a summary.
@@ -121,19 +127,22 @@ dotnet run -- explain -s CodeTracer.sln --method "Agent.GetAction" --depth 3 --m
 ```
 
 ```markdown
-# Agent.GetAction  (Agent.cs:214)
+# Agent.GetAction  (Agent.cs:241)
 _Deep explanation following the call chain (6 methods)._
 
 ## L0 · Agent.GetAction
-This method attempts to extract a structured action (a tool name and its arguments) from a
-large language model's output, ensuring the action is valid… It handles failures by
-iteratively prompting the model for corrections (1 initial + 2 correction attempts).
+    private async Task<(string,...)?> GetAction(List<ChatMsg> messages)   ← the method's REAL source
+    { for (int attempt = 0; attempt < 3; attempt++) { ... } }             is shown under each heading
+This method extracts a structured action (tool + args) from the model's output; it retries with
+corrections on bad output (1 attempt + 2 corrections).
 
-## L1 · LlmClient.ChatAsync      → the actual HTTP call to Ollama (/api/chat)
+## L1 · LlmClient.ChatAsync      → the HTTP call to Ollama (/api/chat)
+       public async Task<string> ChatAsync(...)        ← indented one notch: it's a level deeper
+       { ... BuildOllama / BuildOpenAI / SendAsync ... }
 ## L1 · Agent.ValidateArgs       → per-tool argument validation
-## L2 · LlmClient.BuildOllama    → builds the request body with the JSON schema (format)
-## L2 · LlmClient.BuildOpenAI    → the OpenAI-compatible variant (response_format)
-## L2 · LlmClient.Truncate       → trims long error bodies
+## L2 · LlmClient.BuildOllama / BuildOpenAI / Truncate  → request body, OpenAI variant, error trim
+
+(each method shows its real source — indented by call-depth, so the nesting reads like the tree)
 
 ## End-to-end logic
 (how a request flows L0 → L1 → L2 and back: the schema-constrained call, validation,
@@ -319,7 +328,8 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--max-methods` | explain | `8` | cap on methods explained in the chain — raise for deeper/wider coverage |
 | `--question` / `--ask` | explain | — | a specific question to focus the explanation on (answered first) |
 | `--goal` | explain | — | (optional) change proposal with a code snippet |
-| `--out` | explain | — | save the output to a file |
+| `--no-code` | explain | off | prose only — don't show each method's source (shown by default, indented by depth) |
+| `--out` | explain | — | save the output to a file (auto-saves if omitted) |
 | `-f, --target-file` | trace | — | file of the target class A |
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
 | `--from` / `--to` | trace | — | direct mode: path from `Class.Method` to `Class.Method` |

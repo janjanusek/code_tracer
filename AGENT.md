@@ -44,7 +44,9 @@ dotnet run -- explain -s <SLN> ( --method "Class.Method" | --file <path.cs> --li
 - `--question "<text>"` (alias `--ask`) — a specific question to focus on. Use whenever the user
   asks something concrete about the code ("where does X come from?", "who calls this?"). Answered first.
 - `--goal "<text>"` — **only** if the user wants a change proposal. For plain understanding, OMIT it.
-- `--out <file.md>` — if they want the result saved to a file.
+- `--no-code` — prose only. By default explain shows each method's **source** under its heading
+  (indented by call-depth); add this only if the user explicitly wants no code.
+- `--out <file.md>` — if they want the result saved to a file. (If omitted, it still auto-saves.)
 
 ### trace — finds the call chain (endpoint → target class, OR method → method)
 ```

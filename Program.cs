@@ -193,7 +193,7 @@ static async Task<int> RunExplain(Options opts)
                                     "Ctrl+C stops and keeps what's done)");
         try
         {
-            var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2, opts.RepoUrl, ct: cts.Token);
+            var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2, opts.RepoUrl, opts.ShowCode, ct: cts.Token);
             text = opts.Depth <= 0
                 ? await explainer.ExplainAsync(chain[0].ctx, opts.Goal, opts.Question, outPath)
                 : await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question, outPath);
@@ -303,6 +303,8 @@ static Options ParseArgs(string[] args)
             case "--out":                     o.Out = Next(); break;
             case "--repo-url":                o.RepoUrl = Next(); break;
             case "--peek":                    if (int.TryParse(Next(), out var pk)) o.Peek = pk; break;
+            case "--no-code":                 o.ShowCode = false; break;
+            case "--with-code":               o.ShowCode = true; break;
             case "--no-llm":                  o.UseLlm = false; break;
             case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
             case "--with-bodies": case "--code":  o.WithBodies = true; break;
@@ -370,6 +372,8 @@ EXPLAIN options:
       --question      (--ask) a specific question to focus the explanation on
       --goal          (optional) "what to change" - adds a change proposal with a code sample.
                       Not needed for plain code understanding.
+      --no-code       prose only: DON'T show each method's source under its heading. By default
+                      the real code IS shown (indented by call-depth, so the nesting is visible).
       --no-llm        DON'T explain locally - just dump the Roslyn-extracted context (method +
                       call-chain source) to feed into a bigger model yourself.
       --peek N        in the --no-llm dump, show only the first N lines of each method body
@@ -437,6 +441,7 @@ class Options
     public string? Out;
     public string? RepoUrl;        // --repo-url: base URL for clickable links (e.g. .../blob/main)
     public int Peek = 0;           // --peek N: in the --no-llm dump show only the first N lines of each method body
+    public bool ShowCode = true;   // --no-code: explain WITHOUT the source snippet under each method (prose only)
 
     // shared
     public string Model = "gemma4:latest";

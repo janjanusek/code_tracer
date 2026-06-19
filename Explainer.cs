@@ -14,17 +14,39 @@ public class Explainer
     private readonly double _temperature;
     private readonly int _blockThreshold;
     private readonly string? _repoUrl;
+    private readonly bool _showCode;
     private readonly CancellationToken _ct;
 
     public Explainer(LlmClient llm, int numPredict = 2048, double temperature = 0.2,
-                     string? repoUrl = null, int blockThreshold = 400, CancellationToken ct = default)
+                     string? repoUrl = null, bool showCode = true, int blockThreshold = 400,
+                     CancellationToken ct = default)
     {
         _llm = llm;
         _numPredict = numPredict;
         _temperature = temperature;
         _repoUrl = repoUrl;
+        _showCode = showCode;
         _blockThreshold = blockThreshold;
         _ct = ct;
+    }
+
+    /// The method's real source as a fenced block (clipped if very long), so the reader sees the
+    /// CODE next to the explanation, not just prose. Deterministic - straight from Roslyn.
+    /// `level` shifts the code right (one notch per call-depth) so the nesting is visible at a
+    /// glance, like the ASCII Call-flow tree. Indenting *content* inside a fence is valid Markdown
+    /// (leading spaces are preserved); only indenting the ``` fence itself would break it.
+    private string CodeBlock(MethodContext ctx, int level = 0, int maxLines = 160)
+    {
+        var pad = new string(' ', level * 3);
+        var lines = ctx.Source.Replace("\r\n", "\n").Split('\n');
+        bool clip = lines.Length > maxLines;
+        var shown = clip ? lines.Take(maxLines) : lines.AsEnumerable();
+        var sb = new StringBuilder();
+        sb.AppendLine("```csharp");
+        foreach (var ln in shown) sb.AppendLine(pad + ln);
+        if (clip) sb.AppendLine(pad + $"// … (+{lines.Length - maxLines} more lines — full method at {ctx.Location})");
+        sb.AppendLine("```");
+        return sb.ToString();
     }
 
     /// "relpath:line" -> clickable markdown link to the repo (if repoUrl is set), otherwise plain text.
@@ -54,6 +76,9 @@ public class Explainer
         if (!string.IsNullOrWhiteSpace(question))
             sb.AppendLine($"> **Question:** {question!.Trim()}");
         sb.AppendLine();
+
+        // Show the actual source first, so the reader sees the code next to the explanation.
+        if (_showCode) sb.AppendLine(CodeBlock(ctx));
 
         // Explanation and change proposal are TWO separate calls - each gets its full
         // token budget, so a verbose explanation never "eats into" the change proposal.
@@ -298,6 +323,7 @@ public class Explainer
             Console.Error.WriteLine($"[explain] ({i}/{total}) L{level}  {ctx.Display} ...{eta}");
             var part = await Ask(BuildNodePrompt(ctx), nodeBudget);
             sb.AppendLine($"## L{level} · {ctx.Display}  ({LinkLoc(ctx.Location, _repoUrl)})");
+            if (_showCode) sb.AppendLine(CodeBlock(ctx, level));
             sb.AppendLine(part.Trim());
             sb.AppendLine();
             notes.Add($"L{level} {ctx.Display}: {Shorten(part, 500)}");

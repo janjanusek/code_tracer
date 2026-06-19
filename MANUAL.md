@@ -67,10 +67,16 @@ dotnet run -- explain -s App.sln --method "TaxEngine.Calculate" --depth 3 --out 
 - **`--depth N ≥ 1`** → follows the call chain N levels down; **each method is explained on its
   own**, then a final **end-to-end synthesis**. At depth ≥ 1 it also lists the method's **callers**.
 - Long methods (> 400 lines) are explained **block by block**, then summarized.
+- **The real source is shown under each method** (a ```csharp block), so you read the code next
+  to the explanation — not just prose. In a deep chain the code is **indented by call-depth**, so
+  the nesting is visible at a glance (like the Call-flow tree). Pass **`--no-code`** for prose only.
 - Every explanation ends with an **"In plain words"** recap — a short, jargon-free "explain
   like I'm 10" version of what the code is for and what the point of it is.
 - …and then a **`## Call-flow`** diagram (ASCII + Mermaid) of the call-tree it walked — see
   [§ Call-flow diagram](#7-call-flow-diagram-automatic). Deterministic, no extra model call.
+
+The goal of all this: a developer who has **never seen the code** can grasp it fast — the code,
+what each piece does, how the calls nest, and a map of the whole flow, in one read.
 
 ### Properties
 
