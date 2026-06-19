@@ -396,18 +396,26 @@ lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and ke
 
 ## Need help with this — or want it inside your enterprise?
 
-CodeTracer exists because so many teams are stuck in exactly this spot: a huge, old C# codebase on
-a locked-down machine — no GPU, no cloud AI allowed. If you'd like help **applying it to your own
-codebase**, or **adapting the approach** (Roslyn as the source of truth + a small local model)
-inside your organisation, I offer consulting.
+CodeTracer is one example of a bigger specialty: **getting real, production work out of local LLMs on
+infrastructure you already own** — plain CPU boxes or **consumer-grade GPU clusters**. No cloud, no
+enterprise-GPU budget, nothing leaving your network.
+
+That's not a lab demo. **Reality Radar** runs a **local model on custom infrastructure** to process
+**500,000 real-estate listings every single day** — at a total running cost of **under \$100/month**.
+The same playbook — a small local model wrapped in exact, deterministic tooling — is what powers
+CodeTracer.
+
+If you want help **applying CodeTracer to your codebase**, or **designing a private, low-cost
+local-LLM pipeline** for your own enterprise — on the hardware you already have — this is exactly
+what I consult on.
 
 <img src="docs/jan.janusek.png" alt="Ján Janušek" width="128" align="left" hspace="16" vspace="4" />
 
 **Ing. Ján Janušek** — CEO & Founder
 
-Builder of practical, **privacy-first** AI that runs where the data lives:
+Privacy-first AI that runs where the data lives, on commodity hardware:
 
-- **Reality Radar** — monitoring 90% of the real-estate market · operated by **AI Unlimited Ltd** — [realityradar.eu](https://www.realityradar.eu)
+- **Reality Radar** — monitors 90% of the real-estate market; a **local model on custom infra**, **500K listings/day for < \$100/month** · AI Unlimited Ltd — [realityradar.eu](https://www.realityradar.eu)
 - **Meeting Buddy** — a **100% private** meeting assistant — [meeting-buddy.com](https://meeting-buddy.com)
 - 💼 LinkedIn: [linkedin.com/in/janjanusek](https://www.linkedin.com/in/janjanusek)
 
