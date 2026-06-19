@@ -1,20 +1,19 @@
-# Trace example — full options (`--with-bodies --annotate --summary`)
+**Full `trace` example — everything on** (`--with-bodies --annotate --summary`)
 
-The same code-walk as [`trace-with-bodies.md`](trace-with-bodies.md), but with **everything on**:
-`--annotate` adds a short LLM **"why" note** per hop (the `> _…_` lines), `--summary` adds a final
-**Summary** + **In plain words** recap, and every trace ends with the auto-generated
-**`## Call-flow`** diagram (ASCII boxes + Mermaid). Signatures show **parameter names**, each call
-site shows the **argument → parameter** mapping, and the **target** node shows its full body. This
-is everything a dev gets from a trace, in one file. Reproducible (needs the model running):
+Everything a dev gets from a trace, in one file: the discovered path with the **code between every
+hop** (each method from its start down to where it calls the next, with the argument → parameter
+mapping), a short LLM **"why" note per hop** (`--annotate`), a final **Summary** + **"In plain
+words"** recap (`--summary`), and the auto **`## Call-flow`** diagram (vertical boxes + Mermaid).
+Path-finding is deterministic (zero model calls); the model only writes the notes and the summary.
+Sections with nothing to report are **omitted, not padded**. Reproducible (needs the model running):
 
 ```bash
 dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --with-bodies --annotate --summary \
   --repo-url https://github.com/janjanusek/code_tracer/blob/main
 ```
 
-> _Path-finding is deterministic (zero model calls); the model is only used for the per-hop "why"
-> notes, the Summary, and the plain-words recap. If you omit `--out`, the result **auto-saves** to
-> `codetracer-trace-Agent.cs-to-RoslynIndex.md` (default on, no flag), so a trace is never lost._
+> _Run: ~90 s · 6 model calls (per-hop "why" notes + Summary + the plain-words recap) ·
+> in 4762 / out 648 tokens · gemma4:latest, CPU-only, no GPU. Auto-saves if you omit `--out`._
 
 ---
 
@@ -22,7 +21,7 @@ dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --with-bodie
 PATH FOUND (4 nodes):
 
 **1. Agent.RunAsync(String solutionPath, String targetFile, String endpoint)**   [Agent.cs:118](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L118)
-> _Executes model-requested external tool call and processes observation_
+> _Executes external tools called by the LLM agent for path finding and analysis_
 
 ```csharp
   118      public async Task RunAsync(string solutionPath, string targetFile, string endpoint)
@@ -91,26 +90,26 @@ _call site: [Agent.cs:196](https://github.com/janjanusek/code_tracer/blob/main/A
 
 ↓ calls **Agent.Dispatch(String tool, JsonElement a)**
 
-**2. Agent.Dispatch(String tool, JsonElement a)**   [Agent.cs:563](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L563)
-> _Extracts symbol name from JSON and queries index for symbol details_
+**2. Agent.Dispatch(String tool, JsonElement a)**   [Agent.cs:566](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L566)
+> _Extracts symbol name from JSON and initiates code index lookup_
 
 ```csharp
-  563      private async Task<string> Dispatch(string tool, JsonElement a)
-  564      {
-  565          string S(string k) => a.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String
-  566              ? (v.GetString() ?? "") : "";
-  567          int I(string k, int def) => a.TryGetProperty(k, out var v) && v.TryGetInt32(out var n) ? n : def;
-  568  
-  569          return tool switch
-  570          {
-  571              "find_symbol"     => await _index.FindSymbol(S("name")),
+  566      private async Task<string> Dispatch(string tool, JsonElement a)
+  567      {
+  568          string S(string k) => a.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String
+  569              ? (v.GetString() ?? "") : "";
+  570          int I(string k, int def) => a.TryGetProperty(k, out var v) && v.TryGetInt32(out var n) ? n : def;
+  571  
+  572          return tool switch
+  573          {
+  574              "find_symbol"     => await _index.FindSymbol(S("name")),
 ```
-_call site: [Agent.cs:571](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L571)  ·  args: S("name") → name_
+_call site: [Agent.cs:574](https://github.com/janjanusek/code_tracer/blob/main/Agent.cs#L574)  ·  args: S("name") → name_
 
 ↓ calls **RoslynIndex.FindSymbol(String name)**
 
 **3. RoslynIndex.FindSymbol(String name)**   [RoslynIndex.cs:157](https://github.com/janjanusek/code_tracer/blob/main/RoslynIndex.cs#L157)
-> _Converts location object into a readable source code reference string_
+> _Converts location object into a readable source code snippet for display_
 
 ```csharp
   157      public async Task<string> FindSymbol(string name)
@@ -128,7 +127,7 @@ _call site: [RoslynIndex.cs:165](https://github.com/janjanusek/code_tracer/blob/
 ↓ calls **RoslynIndex.Rel(Location loc)**
 
 **4. RoslynIndex.Rel(Location loc)**   [RoslynIndex.cs:38](https://github.com/janjanusek/code_tracer/blob/main/RoslynIndex.cs#L38)  (target)
-> _Formats location into a file path and line number string_
+> _Formats relative path and line number for display_
 
 ```csharp
    38      private string Rel(Location loc)
@@ -141,26 +140,21 @@ _call site: [RoslynIndex.cs:165](https://github.com/janjanusek/code_tracer/blob/
 ```
 
 ## Summary
-### Summary for Developer
+### Summary of `find_path` Call Chain
 
-This call chain executes a core functionality within an AI Agent framework designed to resolve code references by querying a structured index based on source code analysis (Roslyn).
+**What it does / purpose**
+This chain executes a deterministic path finding mechanism within an LLM agent framework. It simulates code analysis by first attempting to find a solution path using pre-defined candidates (pre-flight checks). If that fails, the agent hands off to an iterative model loop. The final step involves resolving a specific source code location (`Location`) into a standardized, relative file path and line number string for display.
 
-#### 1. What it does / purpose
-The primary goal of this path is **Symbol Resolution and Location Formatting**. The process begins when the `Agent` determines that it needs to find details about a specific symbol (e.g., a class or method name) mentioned in the user's prompt. It uses an internal index (`RoslynIndex`) to look up this symbol, which returns structured location data (`Location`). Finally, the deepest function formats this raw `Location` object into a human-readable file path and line number string (e.g., `MyFile.cs:123`).
+**Dependencies**
+*   **LLM Agent Logic:** Relies on managing conversational state (messages) and executing tool calls based on LLM output.
+*   **Roslyn Indexing:** Uses `RoslynIndex` to perform symbol lookups (`FindSymbol`), which requires access to the compiled solution structure.
+*   **System Path Utilities:** The final step depends on standard .NET path manipulation (`Path.GetRelativePath`) and location data provided by Roslyn.
 
-#### 2. Dependencies
-*   **Agent:** The orchestrating class that manages the overall interaction loop (including model calls and tool dispatching).
-*   **RoslynIndex:** A service responsible for querying code structure information using Roslyn APIs. It acts as the source of truth for symbol existence.
-*   **Location Object:** A complex type representing a specific point in the source code, containing path and line span details.
-*   **File System (`System.IO.Path`):** Used by `RoslynIndex.Rel` to calculate relative paths from the solution directory.
-
-#### 3. Good to know
-*   **Deterministic Fallback:** The agent prioritizes a "deterministic pre-flight" check (lines 122-132). This means that if a path can be found purely through code logic (Roslyn) without needing an LLM call, it will use that result immediately, improving reliability and speed.
-*   **Source of Truth:** The agent explicitly treats `RoslynIndex` as the "source of truth" for code structure; the LLM is only used to navigate complex cases like interface implementations or dependency injection graphs.
-*   **Path Handling:** The `Rel` function handles path normalization by attempting to calculate a relative path (`Path.GetRelativePath`) from the solution directory, ensuring the output is clean and context-aware.
+**Good to know**
+The agent prioritizes deterministic, CPU-based "pre-flight" checks over waiting for LLM model calls, making the initial path finding fast and reliable even if the model is slow or fails. The `RoslynIndex.Rel` method attempts to calculate a relative path using `Path.GetRelativePath(SolutionDir, path)`, but it includes a `try/catch` block, meaning that if calculating the relative path fails (e.g., due to different root directories), it gracefully falls back and returns the absolute path instead.
 
 ## In plain words
-Imagine you have a giant book of computer instructions. When someone asks your smart helper AI about a specific word or idea in that book, this process acts like a super-fast librarian. It quickly looks up where that exact word is written—like pointing to the right page and line number—so it can give you an accurate answer without guessing.
+Imagine this code is like a detective trying to find where something is in a giant pile of LEGO instructions. First, it quickly checks a few easy spots by itself. If that doesn't work, it gets smarter and tries again and again until it finds the right spot. Finally, it writes down the exact address so you can easily point to it on the real instruction booklet.
 
 ## Call-flow
 _The path the analysis found — deterministic, straight from Roslyn (no model)._
@@ -171,7 +165,7 @@ _The path the analysis found — deterministic, straight from Roslyn (no model).
 └──────────────┬─────────────┘
                ▼  calls
 ┌────────────────────────────┐
-│ Agent.Dispatch             │   Agent.cs:563
+│ Agent.Dispatch             │   Agent.cs:566
 └──────────────┬─────────────┘
                ▼  calls
 ┌────────────────────────────┐

@@ -376,10 +376,13 @@ fall back to find_callers from the target going UP one hop at a time, then finis
                 "2. **Dependencies** - the key services, types or external calls it relies on.\n" +
                 "3. **Good to know** - anything important or non-obvious they did NOT ask about " +
                 "(side effects, assumptions, edge cases, gotchas).\n" +
-                "Be concise and concrete; short paragraphs or bullets.";
+                "Be concise and concrete; short paragraphs or bullets. OMIT any of the three that has " +
+                "nothing real to report - do NOT write a sentence saying there are none / no risks / " +
+                "no trade-offs. Only include what adds information.";
             return (await _llm.ChatAsync(new[]
             {
-                new ChatMsg("system", "You summarize a code call-chain for a developer. Concise, factual, plain English."),
+                new ChatMsg("system", "You summarize a code call-chain for a developer. Concise, factual, plain English. " +
+                    "Skip empty sections instead of writing that something is absent."),
                 new ChatMsg("user", prompt)
             }, new ChatOptions { Temperature = 0.2, NumPredict = 2048 }, "summary")).Trim();
         }

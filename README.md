@@ -160,10 +160,10 @@ Agent.GetAction   ◆ start      Agent.cs:241
 └─► Agent.ValidateArgs         Agent.cs:293
 ```
 
-**→ Full examples in the repo:**
-[`explain-agent-getaction.md`](examples/explain-agent-getaction.md) (3 levels) ·
-[`explain-deep-runasync.md`](examples/explain-deep-runasync.md) (12 methods over 3 levels — the
-whole agent loop, each method explained, then an end-to-end synthesis).
+**→ Full example in the repo:**
+[`examples/explain-full-example.md`](examples/explain-full-example.md) — a real deep + wide run
+(12 methods over 3 levels): each method's source + explanation, an end-to-end synthesis, an "In
+plain words" recap, and the Call-flow diagram.
 
 ---
 
@@ -228,8 +228,8 @@ NotificationService.Notify   ◆ start  Services.cs:10
     └─► Audit.Record   ★ target       Audit.cs:8
 ```
 
-**→ Full example in the repo:** [`examples/trace-agent-to-roslynindex.md`](examples/trace-agent-to-roslynindex.md)
-— all 15 distinct paths, each hop with its `file:line`.
+**→ Full DI example in the repo:** [`examples/trace-di-multiple-impls.md`](examples/trace-di-multiple-impls.md)
+— every implementation path through an interface, drawn as a branching Call-flow tree.
 
 **See the actual code between the hops:** add **`--with-bodies`** (`--code`) and each method's
 source is shown **from its start down to the line where it calls the next hop** — so you read
@@ -244,9 +244,9 @@ dotnet run -- trace -s CodeTracer.sln -f RoslynIndex.cs -e Agent.cs --no-llm --w
 
 Add **`--annotate`** (`--why`) for a short LLM **"why" note per hop** — it sees the prior steps
 (so the notes are depth-aware) and stays silent on trivial hops. Add **`--summary`** for a final
-**Summary** section (purpose, dependencies, good-to-know) included in the saved file. **→ Examples:**
-[`trace-with-bodies.md`](examples/trace-with-bodies.md) ·
-[`trace-with-bodies-annotated.md`](examples/trace-with-bodies-annotated.md).
+**Summary** section (purpose, dependencies, good-to-know) included in the saved file. **→ Full
+example:** [`examples/trace-full-example.md`](examples/trace-full-example.md) — bodies + a "why"
+note per hop + Summary + "In plain words" + the Call-flow diagram, all in one file.
 
 ### Token-level JSON enforcement (why a small model can't "break" the format)
 The model's action selection uses **Ollama structured outputs**: the request carries a
@@ -388,19 +388,21 @@ Diagram.cs       the auto "## Call-flow" diagram (ASCII + Mermaid) of what the a
 
 ## See a complete run
 
-Want the full picture before installing anything? These two example files are **real, unedited
-runs against CodeTracer's own source** — open them and you see exactly what you get:
+Want the full picture before installing anything? These example files are **real, unedited runs
+against CodeTracer's own source** — open them and you see exactly what you get:
 
-- **[`examples/explain-deep-runasync.md`](examples/explain-deep-runasync.md)** — a deep + wide
-  `explain` (12 methods, 3 levels): every method explained, an end-to-end synthesis, an "In plain
-  words" recap, and the `## Call-flow` diagram. The whole codebase logic, in one file.
+- **[`examples/explain-full-example.md`](examples/explain-full-example.md)** — a deep + wide
+  `explain` (12 methods, 3 levels): each method's **source + explanation**, an end-to-end
+  synthesis, an "In plain words" recap, and the `## Call-flow` diagram. The whole codebase logic,
+  in one file.
+- **[`examples/trace-full-example.md`](examples/trace-full-example.md)** — a `trace` with the code
+  between every hop, a "why" note per hop, a Summary, an "In plain words" recap, and the Call-flow.
 - **[`examples/trace-di-multiple-impls.md`](examples/trace-di-multiple-impls.md)** — DI through an
   interface with 3 implementations + a decorator: every path enumerated, drawn as a branching
   Call-flow.
 
-The [`examples/`](examples) folder has the rest (with bodies, annotations, summaries). Every run
-also **auto-saves** (no `--out` needed) and **saves incrementally**, so a long deep run is never
-lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and keep what's done.
+Every run also **auto-saves** (no `--out` needed) and **saves incrementally**, so a long deep run
+is never lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and keep what's done.
 
 ---
 

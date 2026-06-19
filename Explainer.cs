@@ -64,7 +64,10 @@ public class Explainer
     private const string SystemPrompt =
         "You are a senior C# developer. You are given ONE method and its context from a large, " +
         "20-year-old system. Explain in clear, plain English. Do not invent anything - stick to " +
-        "the code you are given.";
+        "the code you are given.\n" +
+        "Be concise and skip filler: if a section (side effects, risks, trade-offs, edge cases, " +
+        "exceptions, etc.) has nothing real to report, OMIT it entirely - do NOT write a sentence " +
+        "saying there are none. Only include sections that add information.";
 
     public async Task<string> ExplainAsync(MethodContext ctx, string? goal, string? question = null,
                                             string? outPath = null)
@@ -187,7 +190,7 @@ public class Explainer
         }
         sb.AppendLine("1. Explain in NUMBERED steps what the method does.");
         sb.AppendLine("2. State the inputs (parameters) and the output (return value).");
-        sb.AppendLine("3. State side effects: fields written, services called, exceptions.");
+        sb.AppendLine("3. Side effects (fields written, services called, exceptions) - ONLY if there are any; skip otherwise.");
         if (ctx.Dependencies.Count > 0)
             sb.AppendLine("4. Explain how the method and its dependencies (below) WORK TOGETHER - " +
                           "who computes what, what is passed to whom, where the result is produced.");
@@ -208,7 +211,7 @@ public class Explainer
         sb.AppendLine("Propose a concrete change:");
         sb.AppendLine("1. What exactly to change (which lines / which logic).");
         sb.AppendLine("2. Code sample - the modified block or a diff.");
-        sb.AppendLine("3. Risks and side effects of the change.");
+        sb.AppendLine("3. Risks or side effects of the change - only if there are real ones; skip otherwise.");
         return await Ask(sb.ToString());
     }
 
@@ -386,8 +389,9 @@ public class Explainer
         sb.AppendLine(ctx.Source);
         sb.AppendLine("```");
         sb.AppendLine();
-        sb.AppendLine("Explain concisely (numbered steps) what THIS method does: its inputs/outputs, side " +
-                      "effects, and what it delegates to the methods it calls. Stay focused on this method.");
+        sb.AppendLine("Explain concisely (numbered steps) what THIS method does: its inputs/outputs, any side " +
+                      "effects, and what it delegates to the methods it calls. Stay focused on this method. " +
+                      "Skip any aspect that has nothing to report - don't pad with 'there are none'.");
         return sb.ToString();
     }
 

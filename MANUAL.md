@@ -133,8 +133,8 @@ dotnet run -- trace -s App.sln --from "OrdersController.Create" --to "PricingEng
 ```
 …gives you, in one file: the code between every hop, a "why" note per hop, a Summary, an "In
 plain words" recap, **and** the Call-flow diagram. See `examples/` for real output:
-`trace-with-bodies.md`, `trace-with-bodies-annotated.md`, `trace-agent-to-roslynindex.md` (all
-paths), `trace-di-multiple-impls.md` (DI fan-out drawn as a branching tree).
+`trace-full-example.md` (all of the above) and `trace-di-multiple-impls.md` (DI fan-out drawn as a
+branching tree).
 
 ### DI, interfaces & multiple implementations
 
@@ -252,7 +252,7 @@ its `file:line`. The layout adapts to what was found:
       └─► Audit.Record   ★ target       Audit.cs:8
   ```
 
-See `examples/trace-di-multiple-impls.md` and `examples/explain-agent-getaction.md` for the full
+See `examples/trace-di-multiple-impls.md` and `examples/explain-full-example.md` for the full
 ASCII + Mermaid output.
 
 ---
