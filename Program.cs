@@ -16,6 +16,7 @@ static async Task<int> RunApp(string[] args)
     return opts.Command switch
     {
         "explain" => await RunExplain(opts),
+        "map"     => await RunMap(opts),
         _         => await RunTrace(opts),
     };
 }
@@ -193,7 +194,7 @@ static async Task<int> RunExplain(Options opts)
                                     "Ctrl+C stops and keeps what's done)");
         try
         {
-            var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2, opts.RepoUrl, opts.ShowCode, ct: cts.Token);
+            var explainer = new Explainer(llm, opts.NumPredict, opts.Temperature ?? 0.2, opts.RepoUrl, opts.ShowCode, opts.Collapse, ct: cts.Token);
             text = opts.Depth <= 0
                 ? await explainer.ExplainAsync(chain[0].ctx, opts.Goal, opts.Question, outPath)
                 : await explainer.ExplainChainAsync(chain, opts.Goal, opts.Question, outPath);
@@ -222,6 +223,113 @@ static async Task<int> RunExplain(Options opts)
 
     ReportPerf(llm, sw);
     return 0;
+}
+
+// ---- map: deterministic reachability overview from one point -----------------
+
+static async Task<int> RunMap(Options opts)
+{
+    opts.Solution ??= Ask("Path to solution (.sln)");
+    if (string.IsNullOrWhiteSpace(opts.Method) && string.IsNullOrWhiteSpace(opts.File))
+        opts.Method = Ask("Root (Class.Method)");
+
+    // distinguish target: --method "Class.Method" or --file + --line (same as explain)
+    string? cls = null, method = null;
+    if (!string.IsNullOrWhiteSpace(opts.Method))
+    {
+        var parts = opts.Method!.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2)
+        {
+            Console.Error.WriteLine("[error] --method expects the format \"Class.Method\".");
+            return 1;
+        }
+        method = parts[^1];
+        cls = parts[^2];
+    }
+    else if (opts.Line <= 0)
+    {
+        Console.Error.WriteLine("[error] with --file you must also pass --line <N>.");
+        return 1;
+    }
+
+    // Default = BOTH directions (2 files), deterministic. --up / --down picks one.
+    bool both = opts.MapUp == opts.MapDown;     // neither or both selected => both
+    bool doDown = both || opts.MapDown;
+    bool doUp   = both || opts.MapUp;
+    int depth = opts.DepthSet ? opts.Depth : 64;   // map maps "very deep" unless you cap it; --max-nodes is the real guard
+
+    Console.Error.WriteLine($"[cfg] mode=map  directions={(doDown && doUp ? "down+up" : doDown ? "down" : "up")}  " +
+                            $"depth={depth}  max-nodes={opts.MaxNodes}  (deterministic, no model)");
+
+    var sw = Stopwatch.StartNew();
+    var index = new RoslynIndex();
+    if (!await TryLoad(index, opts.Solution!)) return 1;
+
+    var label = cls != null ? $"{cls}.{method}" : $"{Path.GetFileNameWithoutExtension(opts.File)}-L{opts.Line}";
+    var written = new List<string>();
+
+    foreach (var down in new[] { true, false })
+    {
+        if (down && !doDown) continue;
+        if (!down && !doUp) continue;
+
+        Console.Error.WriteLine($"[map] building {(down ? "downstream (callees)" : "upstream (callers)")} map ...");
+        var built = await index.BuildMap(cls, method, opts.File, opts.Line, down, depth, opts.MaxNodes);
+        if (built == null)
+        {
+            Console.Error.WriteLine("[error] root method not found (or has no source available).");
+            return 1;
+        }
+        var (graph, truncated) = built.Value;
+
+        var text = RenderMapDoc(graph, down, depth, truncated);
+        // single direction honours --out; both directions always auto-name (can't share one path)
+        var outPath = (!both && !string.IsNullOrWhiteSpace(opts.Out))
+            ? opts.Out!
+            : AutoOutPath(down ? "map-down" : "map-up", label);
+        try
+        {
+            await File.WriteAllTextAsync(outPath, text);
+            written.Add(outPath);
+            Console.Error.WriteLine($"[map] saved {(down ? "downstream" : "upstream")} map to {outPath}");
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"map written: {string.Join(", ", written)}");
+    Console.WriteLine("Tip: pick an interesting node and run `explain`/`trace` on it for the detail.");
+    sw.Stop();
+    Console.Error.WriteLine($"[perf] {sw.Elapsed.TotalSeconds.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}s · 0 model calls (deterministic)");
+    return 0;
+}
+
+// Self-describing markdown for one direction of a map (so a saved file makes sense on its own).
+static string RenderMapDoc(Diagram.Graph graph, bool down, int depth, bool truncated)
+{
+    var root = graph.Nodes.Count > 0 ? graph.Nodes[0] : null;
+    var rootLabel = root?.Label ?? "?";
+    var rootWhere = root != null && root.Where.Length > 0 ? $"  ({root.Where})" : "";
+    var dir = down ? "what it calls (downstream / callees)" : "what reaches it (upstream / callers — impact)";
+
+    var sb = new System.Text.StringBuilder();
+    sb.AppendLine($"# Map · {rootLabel} · {dir}{rootWhere}");
+    sb.AppendLine($"_Deterministic reachability (no model), in-solution calls only, to depth {depth}. " +
+                  "A fast overview — pick an interesting node and run `explain`/`trace` on it for the detail._");
+    if (truncated)
+        sb.AppendLine($"> ⚠ Truncated at the node cap — this is a partial cut. Raise `--max-nodes` for more.");
+    sb.AppendLine();
+
+    var section = Diagram.Section(graph, down
+        ? $"Everything {rootLabel} reaches"
+        : $"Everything that reaches {rootLabel}");
+    if (string.IsNullOrWhiteSpace(section))
+        sb.AppendLine(down
+            ? "_No in-solution callees — this method is a leaf (it calls only framework/external code)._"
+            : "_No in-solution callers — this looks like an entry-point (route handler, DI, reflection, or tests)._");
+    else
+        sb.AppendLine(section);
+    return sb.ToString();
 }
 
 // ---- shared helpers ----------------------------------------------------------
@@ -277,7 +385,7 @@ static Options ParseArgs(string[] args)
 {
     var o = new Options();
     int start = 0;
-    if (args.Length > 0 && (args[0] == "explain" || args[0] == "trace"))
+    if (args.Length > 0 && (args[0] == "explain" || args[0] == "trace" || args[0] == "map"))
     {
         o.Command = args[0];
         start = 1;
@@ -296,8 +404,11 @@ static Options ParseArgs(string[] args)
             case "--method":                  o.Method = Next(); break;
             case "--file":                    o.File = Next(); break;
             case "--line":                    if (int.TryParse(Next(), out var ln)) o.Line = ln; break;
-            case "--depth":                   if (int.TryParse(Next(), out var dp)) o.Depth = dp; break;
+            case "--depth":                   if (int.TryParse(Next(), out var dp)) { o.Depth = dp; o.DepthSet = true; } break;
             case "--max-methods":             if (int.TryParse(Next(), out var mm)) o.MaxMethods = mm; break;
+            case "--max-nodes":               if (int.TryParse(Next(), out var mn)) o.MaxNodes = mn; break;
+            case "--up": case "--callers":    o.MapUp = true; break;
+            case "--down": case "--callees":  o.MapDown = true; break;
             case "--question": case "--ask":  o.Question = Next(); break;
             case "--goal":                    o.Goal = Next(); break;
             case "--out":                     o.Out = Next(); break;
@@ -305,6 +416,7 @@ static Options ParseArgs(string[] args)
             case "--peek":                    if (int.TryParse(Next(), out var pk)) o.Peek = pk; break;
             case "--no-code":                 o.ShowCode = false; break;
             case "--with-code":               o.ShowCode = true; break;
+            case "--no-collapse":             o.Collapse = false; break;
             case "--no-llm":                  o.UseLlm = false; break;
             case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
             case "--with-bodies": case "--code":  o.WithBodies = true; break;
@@ -332,11 +444,13 @@ CodeTracer - C# tool on top of Roslyn + a local model (Ollama / LM Studio).
 COMMANDS:
   trace    (default) autonomous agent finds the call chain from an endpoint to a target class
   explain            step-by-step explanation of a specific method (+ optional change proposal)
+  map                deterministic reachability map from one point - both directions, no model
 
 USAGE:
   codetracer trace   -s <sln> -f <target.cs> -e "<endpoint>" [options]
   codetracer explain -s <sln> --method "Class.Method" [--goal "..."] [options]
   codetracer explain -s <sln> --file <path.cs> --line <N>  [--goal "..."] [options]
+  codetracer map     -s <sln> --method "Class.Method" [--up | --down] [options]
 
 TRACE options:
   -s, --solution      path to the .sln
@@ -373,7 +487,10 @@ EXPLAIN options:
       --goal          (optional) "what to change" - adds a change proposal with a code sample.
                       Not needed for plain code understanding.
       --no-code       prose only: DON'T show each method's source under its heading. By default
-                      the real code IS shown (indented by call-depth, so the nesting is visible).
+                      the real code IS shown (whole section indented by call-depth via blockquotes).
+      --no-collapse   don't wrap each method's source in a foldable <details> block. By default the
+                      source is collapsible (open) - foldable in the VS Code preview / GitHub, like
+                      an IDE. Use this for plain-text contexts that don't render HTML.
       --no-llm        DON'T explain locally - just dump the Roslyn-extracted context (method +
                       call-chain source) to feed into a bigger model yourself.
       --peek N        in the --no-llm dump, show only the first N lines of each method body
@@ -381,6 +498,17 @@ EXPLAIN options:
       --repo-url URL  render file locations as clickable links to the repo, e.g.
                       https://github.com/you/repo/blob/main  (path is relative to the .sln dir)
       --out           save the result to a .md file
+
+MAP options:    (deterministic overview - which methods a point reaches; no model)
+      --method        "Class.Method" - the root of the map
+      --file + --line alternative: file and a line inside the root method
+      --down          (--callees) map ONLY downstream (what the root calls)
+      --up            (--callers) map ONLY upstream (what reaches the root - impact analysis)
+                      default (neither flag): BOTH directions, written to TWO files
+      --depth N       how deep to follow the graph (default: very deep; --max-nodes is the real guard)
+      --max-nodes N   hard cap on the map size so a huge graph can't explode (default 400; said out
+                      loud when hit). Each result is an ASCII tree AND a Mermaid graph.
+      --out           single direction only: save to this path (both directions always auto-name)
 
 SHARED options:
   -m, --model         model name (default: gemma4:latest)
@@ -410,6 +538,12 @@ EXAMPLES:
 
   # save the local explanation to .md
   codetracer explain -s ./Big.sln --method "TaxEngine.Calculate" --depth 3 --out tax.md
+
+  # map BOTH directions from a method (2 files: what it reaches + what reaches it) - no model
+  codetracer map -s ./Big.sln --method "TaxEngine.Calculate"
+
+  # impact analysis: who (transitively) calls this method, as one ASCII + Mermaid graph
+  codetracer map -s ./Big.sln --method "PricingRepository.Save" --up --out who-calls-save.md
 """);
 }
 
@@ -435,13 +569,20 @@ class Options
     public string? File;
     public int Line = 0;
     public int Depth = 1;          // call chain depth for deep explain (0 = the method alone)
+    public bool DepthSet = false;  // was --depth passed explicitly? (map defaults to "very deep" otherwise)
     public int MaxMethods = 8;     // cap on the number of methods in the deep-explain chain
+
+    // map
+    public int MaxNodes = 400;     // --max-nodes: hard cap on the reachability map size (safety vs huge graphs)
+    public bool MapUp = false;     // --up/--callers: map the caller (impact) direction
+    public bool MapDown = false;   // --down/--callees: map the callee (downstream) direction
     public string? Question;       // --question/--ask: a specific question to focus the explanation on
     public string? Goal;
     public string? Out;
     public string? RepoUrl;        // --repo-url: base URL for clickable links (e.g. .../blob/main)
     public int Peek = 0;           // --peek N: in the --no-llm dump show only the first N lines of each method body
     public bool ShowCode = true;   // --no-code: explain WITHOUT the source snippet under each method (prose only)
+    public bool Collapse = true;   // --no-collapse: don't wrap each method's source in a <details> (fold-able) block
 
     // shared
     public string Model = "gemma4:latest";

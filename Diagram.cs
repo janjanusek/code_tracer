@@ -191,14 +191,25 @@ public static class Diagram
 
     /// Branching flow (a call-tree, or several paths that fan out / converge — e.g. DI implementations):
     /// an indented tree with box-drawing connectors. Locations are aligned into a column.
+    // The ASCII tree is the at-a-glance view; the Mermaid block below it is ALWAYS complete. Cap the rows
+    // so a huge graph (e.g. a deep `map`) can't produce a wall of text - but say so, never truncate silently.
+    private const int MaxAsciiRows = 200;
+
     private static string AsciiTree(Graph g, List<string> roots)
     {
         var rows = new List<(string text, string where, string note)>();
         var stack = new HashSet<string>(StringComparer.Ordinal);
+        bool capped = false;
 
         void Walk(string nodeId, string prefix, bool isLast, bool isRoot)
         {
-            if (rows.Count > 80) return;                       // hard cap so a huge graph can't explode
+            if (capped) return;
+            if (rows.Count >= MaxAsciiRows)
+            {
+                rows.Add(("… (tree truncated here — the Mermaid graph below shows the full set)", "", ""));
+                capped = true;
+                return;
+            }
             var n = g.ById(nodeId);
             if (n == null) return;
             var connector = isRoot ? "" : isLast ? "└─► " : "├─► ";

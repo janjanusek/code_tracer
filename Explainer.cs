@@ -15,37 +15,68 @@ public class Explainer
     private readonly int _blockThreshold;
     private readonly string? _repoUrl;
     private readonly bool _showCode;
+    private readonly bool _collapse;
     private readonly CancellationToken _ct;
 
     public Explainer(LlmClient llm, int numPredict = 2048, double temperature = 0.2,
-                     string? repoUrl = null, bool showCode = true, int blockThreshold = 400,
-                     CancellationToken ct = default)
+                     string? repoUrl = null, bool showCode = true, bool collapse = true,
+                     int blockThreshold = 400, CancellationToken ct = default)
     {
         _llm = llm;
         _numPredict = numPredict;
         _temperature = temperature;
         _repoUrl = repoUrl;
         _showCode = showCode;
+        _collapse = collapse;
         _blockThreshold = blockThreshold;
         _ct = ct;
     }
 
     /// The method's real source as a fenced block (clipped if very long), so the reader sees the
     /// CODE next to the explanation, not just prose. Deterministic - straight from Roslyn.
-    /// `level` shifts the code right (one notch per call-depth) so the nesting is visible at a
-    /// glance, like the ASCII Call-flow tree. Indenting *content* inside a fence is valid Markdown
-    /// (leading spaces are preserved); only indenting the ``` fence itself would break it.
-    private string CodeBlock(MethodContext ctx, int level = 0, int maxLines = 160)
+    /// The code is ALWAYS at its natural indentation; call-depth is conveyed by Quote() wrapping the
+    /// whole section (see ExplainChainAsync), never by shifting the code itself - padded C# inside a
+    /// fence reads as if the source were mis-indented, which it isn't.
+    /// Unless --no-collapse, the fence is wrapped in a `&lt;details open&gt;` so the reader can FOLD each
+    /// method's source (IDE-style) while keeping the explanation visible. The blank lines around the
+    /// fence are required so Markdown parses the code inside the raw-HTML block; this renders in the
+    /// VS Code preview / GitHub, and survives the blockquote prefix that Quote() adds (verified).
+    private string CodeBlock(MethodContext ctx, int maxLines = 160)
     {
-        var pad = new string(' ', level * 3);
         var lines = ctx.Source.Replace("\r\n", "\n").Split('\n');
         bool clip = lines.Length > maxLines;
         var shown = clip ? lines.Take(maxLines) : lines.AsEnumerable();
         var sb = new StringBuilder();
+        if (_collapse)
+        {
+            sb.AppendLine("<details open>");
+            sb.AppendLine("<summary>source</summary>");
+            sb.AppendLine();
+        }
         sb.AppendLine("```csharp");
-        foreach (var ln in shown) sb.AppendLine(pad + ln);
-        if (clip) sb.AppendLine(pad + $"// … (+{lines.Length - maxLines} more lines — full method at {ctx.Location})");
+        foreach (var ln in shown) sb.AppendLine(ln);
+        if (clip) sb.AppendLine($"// … (+{lines.Length - maxLines} more lines — full method at {ctx.Location})");
         sb.AppendLine("```");
+        if (_collapse)
+        {
+            sb.AppendLine();
+            sb.AppendLine("</details>");
+        }
+        return sb.ToString();
+    }
+
+    /// Wraps a whole rendered section (heading + code fence + prose) in `level` blockquote markers,
+    /// so it is visually indented by call-depth. Nested blockquotes are the ONLY portable Markdown
+    /// construct that horizontally indents a block containing a fenced code block: indenting prose
+    /// with spaces turns it into a code block, and indenting the ``` fence itself breaks it. Blank
+    /// lines keep the markers too, otherwise a blank line would split the blockquote in two.
+    private static string Quote(string block, int level)
+    {
+        if (level <= 0) return block;
+        var prefix = string.Concat(Enumerable.Repeat("> ", level));
+        var sb = new StringBuilder();
+        foreach (var ln in block.Replace("\r\n", "\n").TrimEnd('\n').Split('\n'))
+            sb.AppendLine(ln.Length == 0 ? prefix.TrimEnd() : prefix + ln);
         return sb.ToString();
     }
 
@@ -325,9 +356,13 @@ public class Explainer
             var eta = Eta(sw.Elapsed, i - 1, total - (i - 1) + 1);
             Console.Error.WriteLine($"[explain] ({i}/{total}) L{level}  {ctx.Display} ...{eta}");
             var part = await Ask(BuildNodePrompt(ctx), nodeBudget);
-            sb.AppendLine($"## L{level} · {ctx.Display}  ({LinkLoc(ctx.Location, _repoUrl)})");
-            if (_showCode) sb.AppendLine(CodeBlock(ctx, level));
-            sb.AppendLine(part.Trim());
+            // Build the whole node (heading + source + explanation) as one block, then indent that
+            // whole block by call-depth via blockquotes - the code itself stays at natural indent.
+            var node = new StringBuilder();
+            node.AppendLine($"## L{level} · {ctx.Display}  ({LinkLoc(ctx.Location, _repoUrl)})");
+            if (_showCode) node.AppendLine(CodeBlock(ctx));
+            node.AppendLine(part.Trim());
+            sb.Append(Quote(node.ToString(), level));
             sb.AppendLine();
             notes.Add($"L{level} {ctx.Display}: {Shorten(part, 500)}");
             await FlushPartial(sb, outPath);              // persist after every method

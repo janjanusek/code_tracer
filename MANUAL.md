@@ -35,6 +35,7 @@ The default API is `http://localhost:11434` (native Ollama). For LM Studio:
 | `explain` | understand a method (or property) + its call chain | `--method "Class.Method"` or `--file --line` |
 | `trace` (endpoint) | find the call chain from an endpoint B to a target class A | `-f <target.cs> -e "<B>"` |
 | `trace` (direct) | find the path between two concrete methods | `--from "C.M" --to "C2.M2"` |
+| `map` | from one method, map everything reachable both ways (callees + callers) — deterministic | `--method "Class.Method"` (`--up` / `--down`) |
 
 ---
 
@@ -68,8 +69,11 @@ dotnet run -- explain -s App.sln --method "TaxEngine.Calculate" --depth 3 --out 
   own**, then a final **end-to-end synthesis**. At depth ≥ 1 it also lists the method's **callers**.
 - Long methods (> 400 lines) are explained **block by block**, then summarized.
 - **The real source is shown under each method** (a ```csharp block), so you read the code next
-  to the explanation — not just prose. In a deep chain the code is **indented by call-depth**, so
-  the nesting is visible at a glance (like the Call-flow tree). Pass **`--no-code`** for prose only.
+  to the explanation — not just prose. In a deep chain the **whole section is indented by call-depth**
+  via nested blockquotes (the code itself keeps its natural indent), so the nesting is visible at a
+  glance (like the Call-flow tree). The source is a **foldable `<details>`** (open by default) — so
+  you can collapse a method's code in the VS Code preview / on GitHub, IDE-style, and still read the
+  explanation. Pass **`--no-code`** for prose only, or **`--no-collapse`** to keep the code expanded.
 - Every explanation ends with an **"In plain words"** recap — a short, jargon-free "explain
   like I'm 10" version of what the code is for and what the point of it is.
 - …and then a **`## Call-flow`** diagram (ASCII + Mermaid) of the call-tree it walked — see
@@ -161,7 +165,40 @@ For those, start from a concrete implementation method (`--from` / `-e`).
 
 ---
 
-## 5. `--depth` vs `--max-methods` (easy to use once you get this)
+## 5. `map`
+
+`trace` is point-to-point ("how do I get from A to B"). **`map` has no destination** — you give it
+one method as the **root** and it expands the call graph until it runs out. **Fully deterministic
+(0 model calls)**, so it's fast and sweeps the whole solution.
+
+```bash
+# default: BOTH directions, written to TWO files
+dotnet run -- map -s App.sln --method "Agent.RunAsync"
+#   -> codetracer-map-down-Agent.RunAsync.md   (what it calls — downstream)
+#   -> codetracer-map-up-Agent.RunAsync.md     (what reaches it — callers / impact)
+
+# one direction (then --out applies):
+dotnet run -- map -s App.sln --method "LlmClient.ChatAsync" --up --out who-calls-llm.md
+
+# by file + line instead of a name:
+dotnet run -- map -s App.sln --file LlmClient.cs --line 87 --down
+```
+
+| flag | meaning |
+|---|---|
+| `--down` / `--callees` | only downstream — what the root calls, transitively ("what does this touch?") |
+| `--up` / `--callers` | only upstream — what reaches the root ("impact: who breaks if I change this?") |
+| *(neither)* | **both directions**, written to two files — the default; that's why `map` is deterministic |
+| `--depth N` | how deep to follow (default: very deep) |
+| `--max-nodes N` | hard cap on the graph (default 400); announced on stderr when hit — never a silent cut |
+
+Each result is an **ASCII tree** (readable anywhere) **and** a **Mermaid graph** (graphics on
+GitHub / VS Code). `map` is the overview; for the detail on any node it surfaces, run `explain` or
+`trace` on that node. See [`examples/map-full-example.md`](examples/map-full-example.md).
+
+---
+
+## 6. `--depth` vs `--max-methods` (easy to use once you get this)
 
 These two knobs control how much of the call chain `explain` covers. You set them yourself.
 
@@ -190,7 +227,7 @@ That's your cue to raise `--max-methods` (and/or `--depth`).
 
 ---
 
-## 6. How names are resolved — and conflicts
+## 7. How names are resolved — and conflicts
 
 A `"Class.Method"` is resolved by the **simple class name** (case-insensitive) + the member name.
 There is **no namespace or overload disambiguation** — if several declarations match, CodeTracer
@@ -213,7 +250,7 @@ Roslyn is still the source of truth — the warning just makes the choice visibl
 
 ---
 
-## 7. Call-flow diagram (automatic)
+## 8. Call-flow diagram (automatic)
 
 Both `explain` and `trace` finish their result with a **`## Call-flow`** section: a high-level map
 of what the analysis found, so you grasp the *shape* before reading the prose. It's **automatic**
@@ -259,7 +296,7 @@ ASCII + Mermaid output.
 
 ---
 
-## 8. Reading the console output (logs, pre-flight, `[perf]`)
+## 9. Reading the console output (logs, pre-flight, `[perf]`)
 
 Everything CodeTracer prints **while it works** goes to **stderr** as short tagged lines (so it
 never pollutes the `--out` file, which is stdout). Here's what each tag means.
@@ -339,7 +376,7 @@ A long deep run is **never lost**, even if you forget `--out`:
 
 ---
 
-## 9. All options
+## 10. All options
 
 | option | command | default | meaning |
 |---|---|---|---|
@@ -350,6 +387,8 @@ A long deep run is **never lost**, even if you forget `--out`:
 | `--max-methods` | explain | `8` | total methods explained in the chain |
 | `--question` / `--ask` | explain | — | a specific question, answered first |
 | `--goal` | explain | — | (optional) change proposal with a code sample |
+| `--no-code` | explain | off | prose only — don't show each method's source |
+| `--no-collapse` | explain | off | keep each method's source expanded (default: foldable `<details>`, open) |
 | `-f, --target-file` | trace | — | file of the target class A |
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
 | `--from` / `--to` | trace | — | direct mode: path from `Class.Method` to `Class.Method` |
@@ -358,7 +397,11 @@ A long deep run is **never lost**, even if you forget `--out`:
 | `--annotate` / `--why` | trace | off | per-hop LLM "why" note (implies `--with-bodies`) |
 | `--summary` | trace | off | final summary section (purpose / deps / good-to-know) |
 | `--max-steps` | trace | `25` | model-loop step limit |
-| `--no-llm` | both | off | trace: deterministic only · explain: dump Roslyn context, no model |
+| `--down` / `--callees` | map | — | map only downstream (what the root calls) |
+| `--up` / `--callers` | map | — | map only upstream (callers / impact); no flag = BOTH (two files) |
+| `--depth` | map | very deep | how far to expand the graph (the `explain` default of 1 does not apply to map) |
+| `--max-nodes` | map | `400` | hard cap on map size (announced when hit, never silent) |
+| `--no-llm` | both | off | trace: deterministic only · explain: dump Roslyn context, no model (map is always model-free) |
 | `--peek` | explain | — | in the `--no-llm` dump, first N lines per method instead of full body |
 | `--repo-url` | both | — | clickable links to the repo (`.../blob/<branch>`) |
 | `--out` | both | — | save the result to a file |
@@ -371,7 +414,7 @@ A long deep run is **never lost**, even if you forget `--out`:
 
 ---
 
-## 10. Model-free / offline
+## 11. Model-free / offline
 
 Roslyn does the exact work; the model is optional. Fully model-free workflows (work even if
 Ollama is not running):
@@ -387,12 +430,12 @@ dotnet run -- explain -s App.sln --method "Some.Method" --depth 10 --max-methods
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 - **Solution won't load** → run `dotnet restore` + `dotnet build` on the *target* solution first.
   `[workspace] …` warnings during load are normal.
 - **`.slnx`** (new SDK format) may not open in older Roslyn — use a classic `.sln`.
-- **Ambiguous match warning** → see §6; use `--file --line` or a more unique entry point.
+- **Ambiguous match warning** → see §7; use `--file --line` or a more unique entry point.
 - **`find_path` finds nothing** → interface/DI calls are followed; a true miss is a purely-dynamic link (reflection / `dynamic` / runtime-wired handler). Try the
   model loop (omit `--no-llm`) or `--from/--to` between concrete methods.
 - **Slow on CPU** → `explain --depth 0`, lower `--num-predict`, drop `--summary`/`--annotate`,

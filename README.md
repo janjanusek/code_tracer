@@ -23,12 +23,13 @@ the model; the model only **explains the code it is given**.
 > **Runs on modest hardware.** Built and used daily on a GPU-less corporate VDI
 > (8 cores / 32 GB RAM, CPU-only) with a **Q4-quantized local model** — no GPU, no cloud, fully offline.
 
-It has **two modes**:
+It has **three modes**:
 
 | mode | what it does | typical question |
 |---|---|---|
 | **`explain`** | explains one method step by step and **pulls in its dependencies** ("how it all fits together") | *"tax is calculated here — explain it and how it works together"* |
 | **`trace`** | finds the **whole call chain** from an endpoint (B) down to a target class (A) and prints it | *"how does execution reach this point?"* |
+| **`map`** | from one method, **maps everything reachable** both ways (callees + callers) — deterministic, no model | *"what does this touch, and who depends on it?"* |
 
 > It does not modify code — that's the engineer's job. The tool is for **understanding** and **mapping**.
 
@@ -103,10 +104,15 @@ non-trivial code you get real depth, layer by layer. `--depth 0` = just the meth
 call. To go deeper/wider on spaghetti, **raise `--max-methods`** (each method = one model call).
 
 **The real source is shown with the explanation.** Each method's code appears (a ```csharp
-block) right under its heading, and in a deep chain it's **indented by call-depth** so the
-nesting reads like the Call-flow tree — you see the code, what it does, and how the calls nest,
-together. The whole point: a dev who has **never seen the codebase** gets, in one read, what
-would otherwise take days of cold-reading. Pass **`--no-code`** for prose only.
+block) right under its heading. In a deep chain the **whole section is indented by call-depth**
+using nested Markdown blockquotes (`>`), so the nesting reads like the Call-flow tree — while the
+**code itself stays at its natural indentation** (indenting the code would just make it look
+mis-indented). The source is wrapped in a **foldable `<details>`** (open by default), so you can
+**collapse a method's code** like in an IDE while keeping the explanation — it folds in the VS Code
+preview / on GitHub. You see the code, what it does, and how the calls nest, together. The whole
+point: a dev who has **never seen the codebase** gets, in one read, what would otherwise take days
+of cold-reading. Pass **`--no-code`** for prose only, or **`--no-collapse`** to keep the code always
+expanded (plain `csharp` fences, for renderers that don't do HTML).
 
 Add **`--question "…"`** (alias `--ask`) to point at the code and ask something specific —
 it's answered first, before the general walkthrough. If a single method is extremely long
@@ -126,23 +132,46 @@ dotnet run -- explain -s CodeTracer.sln --method "Agent.GetAction" --depth 3 --m
   --repo-url https://github.com/janjanusek/code_tracer/blob/main
 ```
 
-```markdown
+````markdown
 # Agent.GetAction  (Agent.cs:241)
 _Deep explanation following the call chain (6 methods)._
 
 ## L0 · Agent.GetAction
-    private async Task<(string,...)?> GetAction(List<ChatMsg> messages)   ← the method's REAL source
-    { for (int attempt = 0; attempt < 3; attempt++) { ... } }             is shown under each heading
+<details open>
+<summary>source</summary>
+
+```csharp
+private async Task<(string,...)?> GetAction(List<ChatMsg> messages)   // the method's REAL source,
+{ for (int attempt = 0; attempt < 3; attempt++) { ... } }             // at its natural indentation
+```
+
+</details>
 This method extracts a structured action (tool + args) from the model's output; it retries with
-corrections on bad output (1 attempt + 2 corrections).
+corrections on bad output (1 attempt + 2 corrections).  ← source is foldable (`<details>`), IDE-style
 
-## L1 · LlmClient.ChatAsync      → the HTTP call to Ollama (/api/chat)
-       public async Task<string> ChatAsync(...)        ← indented one notch: it's a level deeper
-       { ... BuildOllama / BuildOpenAI / SendAsync ... }
-## L1 · Agent.ValidateArgs       → per-tool argument validation
-## L2 · LlmClient.BuildOllama / BuildOpenAI / Truncate  → request body, OpenAI variant, error trim
+> ## L1 · LlmClient.ChatAsync      → the HTTP call to Ollama (/api/chat)
+> <details open>
+> <summary>source</summary>
+>
+> ```csharp
+> public async Task<string> ChatAsync(...)
+> { ... BuildOllama / BuildOpenAI / SendAsync ... }
+> ```
+>
+> </details>
+> The whole L1 section sits one blockquote in — a level deeper than L0; the code keeps its
+> natural indentation.
 
-(each method shows its real source — indented by call-depth, so the nesting reads like the tree)
+> > ## L2 · LlmClient.BuildOllama / BuildOpenAI / Truncate
+> > <details open>
+> > <summary>source</summary>
+> >
+> > ```csharp
+> > ...request body, OpenAI variant, error trim...
+> > ```
+> >
+> > </details>
+> > Nested another blockquote in — the deeper the call, the further the whole section is indented.
 
 ## End-to-end logic
 (how a request flows L0 → L1 → L2 and back: the schema-constrained call, validation,
@@ -158,7 +187,7 @@ Agent.GetAction   ◆ start      Agent.cs:241
 │   ├─► LlmClient.BuildOpenAI  LlmClient.cs:159
 │   └─► LlmClient.Truncate     LlmClient.cs:201
 └─► Agent.ValidateArgs         Agent.cs:293
-```
+````
 
 **→ Full example in the repo:**
 [`examples/explain-full-example.md`](examples/explain-full-example.md) — a real deep + wide run
@@ -271,6 +300,37 @@ Agent tools: `find_path`, `find_callers`, `find_callees`, `get_method`, `find_sy
 
 ---
 
+## `map` mode — reachability from one point (deterministic, no model)
+
+Where `trace` answers *"how do I get from A to B"* (point-to-point), **`map` answers *"what can I
+reach from here"*** — it picks one method as the root and expands the call graph until it runs out,
+with **no fixed destination**. It's **fully deterministic** (pure Roslyn, **0 model calls**), so it's
+fast and runs over the whole solution.
+
+```bash
+# default: BOTH directions, written to TWO files
+codetracer map -s CodeTracer.sln --method "Agent.RunAsync"
+#   -> codetracer-map-down-Agent.RunAsync.md   (what it calls — downstream)
+#   -> codetracer-map-up-Agent.RunAsync.md     (what reaches it — callers / impact)
+
+# one direction only (then you can use --out):
+codetracer map -s CodeTracer.sln --method "LlmClient.ChatAsync" --up --out who-calls-llm.md
+```
+
+- **`--down`** (`--callees`) — what the root calls, transitively. *"What does this touch?"*
+- **`--up`** (`--callers`) — what reaches the root, transitively. **Impact analysis:** *"if I change
+  this, who breaks?"*
+- **default (neither flag)** — both, as two files. Because both directions over a busy method is
+  **heavy**, `map` is deterministic by design — for a deep dive on any node, run `explain`/`trace` on it.
+- **`--depth N`** — how deep to follow (default: very deep); **`--max-nodes N`** is the real guard
+  (default 400, and it says so on stderr when it caps — never a silent truncation).
+
+Each result is an **ASCII tree** (readable anywhere) **and** a **Mermaid graph** (renders as graphics
+on GitHub / VS Code). **→ Full example:** [`examples/map-full-example.md`](examples/map-full-example.md)
+— both directions from `Agent.RunAsync`, the entire app graph in two diagrams.
+
+---
+
 ## Choosing `--depth` and `--max-methods`
 
 These two knobs decide how much of the call chain you get — you set them yourself, no AI needed
@@ -324,11 +384,12 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `-s, --solution` | both | — | path to the `.sln` (required) |
 | `--method` | explain | — | `"Class.Method"` to explain |
 | `--file` + `--line` | explain | — | alternative to `--method` |
-| `--depth` | explain | `1` | how deep to follow the call chain; each method explained + end-to-end synthesis (0 = method only) |
+| `--depth` | explain+map | explain `1` / map very deep | how deep to follow the call chain (explain: each method explained + synthesis, 0 = method only; map: how far to expand the graph) |
 | `--max-methods` | explain | `8` | cap on methods explained in the chain — raise for deeper/wider coverage |
 | `--question` / `--ask` | explain | — | a specific question to focus the explanation on (answered first) |
 | `--goal` | explain | — | (optional) change proposal with a code snippet |
-| `--no-code` | explain | off | prose only — don't show each method's source (shown by default, indented by depth) |
+| `--no-code` | explain | off | prose only — don't show each method's source (shown by default; whole section indented by call-depth via blockquotes) |
+| `--no-collapse` | explain | off | keep each method's source always expanded (by default it's a foldable `<details>`, open) |
 | `--out` | explain | — | save the output to a file (auto-saves if omitted) |
 | `-f, --target-file` | trace | — | file of the target class A |
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
@@ -339,6 +400,10 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--no-llm` | trace+explain | off | trace: deterministic only; explain: dump Roslyn context, no model |
 | `--max-steps` | trace | `25` | agent step limit |
 | `--summary` | trace | off | LLM summary (purpose, dependencies, good-to-know) + an "In plain words" (ELI10) recap; in the saved file |
+| `--method` / `--file`+`--line` | map | — | the root method of the map |
+| `--down` / `--callees` | map | — | map only downstream (what the root calls) |
+| `--up` / `--callers` | map | — | map only upstream (callers / impact); default with no flag = BOTH, as two files |
+| `--max-nodes` | map | `400` | hard cap on map size (said out loud when hit, never silent) |
 | `--repo-url` | trace+explain | — | render locations as clickable links to the repo |
 | `--peek` | explain | — | in the `--no-llm` dump, show first N lines per method instead of the full body |
 | `-m, --model` | both | `gemma4:latest` | model name |
@@ -400,6 +465,12 @@ against CodeTracer's own source** — open them and you see exactly what you get
 - **[`examples/trace-di-multiple-impls.md`](examples/trace-di-multiple-impls.md)** — DI through an
   interface with 3 implementations + a decorator: every path enumerated, drawn as a branching
   Call-flow.
+- **[`examples/map-full-example.md`](examples/map-full-example.md)** — a `map` from one method, both
+  directions (downstream + upstream/impact): the whole app's call graph in two ASCII + Mermaid
+  diagrams, **0 model calls**.
+- **[`examples/explain-gemma3n-e2b-example.md`](examples/explain-gemma3n-e2b-example.md)** — the
+  **same `explain`** on a **micro model** (`gemma3n:e2b`): ~3.4 min vs ~27 min (**≈7.8× faster**),
+  terser but coherent — compare a tiny local model against `gemma4:latest` side by side.
 
 Every run also **auto-saves** (no `--out` needed) and **saves incrementally**, so a long deep run
 is never lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and keep what's done.

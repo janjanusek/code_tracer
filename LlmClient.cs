@@ -130,8 +130,14 @@ public class LlmClient
         EvalTokens += outTok;
         _callLog.Add(new CallStat(sw.Elapsed.TotalSeconds, inTok, outTok, label));
 
-        return content ?? "";
+        return Sanitize(content ?? "");
     }
+
+    /// Some SentencePiece-tokenizer models (notably small Gemma variants) occasionally LEAK the raw
+    /// metaspace marker '▁' (U+2581) into their output where a normal space belongs - e.g. rendering
+    /// "Detection:▁▁It iterates" instead of "Detection: It iterates". It's never a legitimate output
+    /// character, so map it back to a space. Guarded so the common (clean) case allocates nothing.
+    private static string Sanitize(string s) => s.IndexOf('▁') < 0 ? s : s.Replace('▁', ' ');
 
     private (string url, string json) BuildOllama(IEnumerable<ChatMsg> messages, ChatOptions o)
     {

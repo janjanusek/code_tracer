@@ -45,7 +45,11 @@ dotnet run -- explain -s <SLN> ( --method "Class.Method" | --file <path.cs> --li
   asks something concrete about the code ("where does X come from?", "who calls this?"). Answered first.
 - `--goal "<text>"` — **only** if the user wants a change proposal. For plain understanding, OMIT it.
 - `--no-code` — prose only. By default explain shows each method's **source** under its heading
-  (indented by call-depth); add this only if the user explicitly wants no code.
+  (the whole section indented by call-depth via blockquotes; the code keeps its natural indent);
+  add this only if the user explicitly wants no code.
+- `--no-collapse` — by default each method's source is a **foldable `<details>`** (open) so it can be
+  collapsed in the VS Code preview / on GitHub; add this only to keep the code always expanded (e.g.
+  for a plain-text renderer that doesn't do HTML).
 - `--out <file.md>` — if they want the result saved to a file. (If omitted, it still auto-saves.)
 
 ### trace — finds the call chain (endpoint → target class, OR method → method)
@@ -68,6 +72,21 @@ dotnet run -- trace -s <SLN> ( -f <target.cs> -e "<endpoint>" | --from "C.M" --t
 - `--repo-url <base>` — clickable links to the repo, e.g. `https://github.com/you/repo/blob/main`.
 - `--no-llm` — deterministic only, no model (fast, works offline). Combine with `--all-paths`
   for a complete deterministic map.
+
+### map — reachability from one point (callees + callers), deterministic, no model
+```
+dotnet run -- map -s <SLN> ( --method "Class.Method" | --file <path.cs> --line <N> )
+                  [--up | --down] [--depth <N>] [--max-nodes <N>] [--out <file.md>] [shared]
+```
+- Use when the user asks **"what does this reach / what does it touch?"** (downstream) or
+  **"who calls this / what breaks if I change it?"** (upstream / impact) — NOT a path between two
+  points (that's `trace`). There is no destination; it expands the graph until depth / `--max-nodes`.
+- `--method` / `--file`+`--line` — the **root**, same selectors as explain.
+- **No flag = BOTH directions → two files** (and deterministic — that's the default; it's heavy).
+  `--down` (`--callees`) or `--up` (`--callers`) restricts to one direction (then `--out` applies).
+- `--depth <N>` — default very deep; `--max-nodes <N>` (default 400) is the real cap (announced when hit).
+- Always **0 model calls**. Each result is an ASCII tree + a Mermaid graph. For detail on any node
+  the map surfaces, follow up with `explain`/`trace` on that node.
 
 ### Shared (add only when the request calls for it)
 ```

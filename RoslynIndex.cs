@@ -810,6 +810,85 @@ public class RoslynIndex
         return result;
     }
 
+    // ====================================================================
+    //  map: deterministic reachability from one point. UNLIKE trace (point-to-point) there is no
+    //  target - we just expand the call graph in ONE direction (callees = downstream, callers =
+    //  upstream/impact) breadth-first until a depth / node cap. No model: it's heavy, so it's a
+    //  fast structural overview - pick an interesting node and run trace/explain on it for detail.
+    // ====================================================================
+
+    /// In-solution methods (with source) that CALL the given method - the upward/impact direction.
+    /// Mirror of InSolutionCallees. Best-effort: FindCallersAsync can be heavy/fail on a big solution.
+    private async Task<List<IMethodSymbol>> InSolutionCallers(IMethodSymbol m)
+    {
+        var result = new List<IMethodSymbol>();
+        var cmp = SymbolEqualityComparer.Default;
+        var seen = new HashSet<ISymbol>(cmp);
+        try
+        {
+            foreach (var c in await SymbolFinder.FindCallersAsync(m, _solution))
+            {
+                if (c.CallingSymbol is not IMethodSymbol cm) continue;
+                if (!cm.Locations.Any(l => l.IsInSource)) continue;     // skip framework/extern callers
+                if (seen.Add(cm)) result.Add(cm);
+            }
+        }
+        catch { /* not critical - an empty caller set just yields a smaller map */ }
+        return result;
+    }
+
+    /// Builds a reachability graph from a root method, following callees (down=true) or callers
+    /// (down=false) breadth-first up to `maxDepth`, hard-capped at `maxNodes`. Deterministic (no model).
+    /// `down` decides edge direction so the tree always reads top→bottom in calling order. Returns null
+    /// if the root can't be resolved; the out `truncated` flag reports whether the node cap was hit.
+    public async Task<(Diagram.Graph graph, bool truncated)?> BuildMap(
+        string? className, string? methodName, string? filePath, int line,
+        bool down, int maxDepth, int maxNodes)
+    {
+        var root = className != null
+            ? await ResolveMethod(className, methodName!)
+            : await ResolveByLocation(filePath!, line);
+        if (root == null) return null;
+
+        string Display(IMethodSymbol m) => $"{m.ContainingType?.Name}.{m.Name}";
+        string Where(IMethodSymbol m)
+        {
+            var l = m.Locations.FirstOrDefault(x => x.IsInSource);
+            return l != null ? Rel(l) : "";
+        }
+
+        var g = new Diagram.Graph();
+        var cmp = SymbolEqualityComparer.Default;
+        var visited = new HashSet<ISymbol>(cmp) { root };
+        var queue = new Queue<(IMethodSymbol sym, int lvl)>();
+        queue.Enqueue((root, 0));
+        // down: root is where you START (◆); up: root is what everything REACHES (★ target at the bottom).
+        g.Add(Display(root), Display(root), Where(root), down ? "entry" : "target");
+
+        bool truncated = false;
+        while (queue.Count > 0 && !truncated)
+        {
+            var (sym, lvl) = queue.Dequeue();
+            if (lvl >= maxDepth) continue;
+            var neighbors = down ? await InSolutionCallees(sym) : await InSolutionCallers(sym);
+            foreach (var nb in neighbors)
+            {
+                // edge always points caller→callee, regardless of which way we walked
+                var from = down ? Display(sym) : Display(nb);
+                var to   = down ? Display(nb)  : Display(sym);
+                g.Add(Display(nb), Display(nb), Where(nb));
+                g.Edge(from, to);
+                if (!visited.Add(nb)) continue;                 // already mapped (cycle / shared callee)
+                if (g.Nodes.Count >= maxNodes) { truncated = true; break; }
+                queue.Enqueue((nb, lvl + 1));
+            }
+        }
+        if (truncated)
+            Console.Error.WriteLine($"[map] hit the {maxNodes}-node cap - graph truncated here. " +
+                                    "Raise --max-nodes (or lower --depth) for a different cut.");
+        return (g, truncated);
+    }
+
     private async Task<MethodContext?> BuildMethodContextFor(IMethodSymbol m, int depth = 0)
     {
         var body = await GetBody(m);
