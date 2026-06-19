@@ -59,6 +59,14 @@ public class Explainer
             : await Ask(BuildUserPrompt(ctx, ctx.Source, question));
         sb.AppendLine(explanation.Trim());
 
+        var simple = await SimplifyForKid(explanation);   // a second, plain-words pass
+        if (!string.IsNullOrWhiteSpace(simple))
+        {
+            sb.AppendLine();
+            sb.AppendLine("## In plain words");
+            sb.AppendLine(simple.Trim());
+        }
+
         if (!string.IsNullOrWhiteSpace(goal))
         {
             var proposal = await ProposeChange(ctx, goal!);
@@ -217,6 +225,25 @@ public class Explainer
         }, label);
     }
 
+    /// A second, very simple "explain like I'm 10" pass over the explanation - in plain words,
+    /// what the code is for and what the point of it is. Cheap (short input/output).
+    private async Task<string> SimplifyForKid(string detailed)
+    {
+        try
+        {
+            var prompt =
+                "Here is a detailed explanation of some code:\n\n" + detailed + "\n\n" +
+                "Now say it again VERY simply - as if to a smart 10-year-old. In 2-4 short sentences, " +
+                "plain words, no jargon: what is this code for and what is the point of it?";
+            return (await _llm.ChatAsync(new[]
+            {
+                new ChatMsg("system", "You explain technical things in very simple, plain language. No jargon."),
+                new ChatMsg("user", prompt)
+            }, new ChatOptions { Temperature = 0.3, NumPredict = 300 }, "eli10")).Trim();
+        }
+        catch { return ""; }
+    }
+
     /// Deep explain: explains the ENTIRE logic along the call chain. Each method in the chain is explained
     /// with a SEPARATE call (full attention, not a truncated snippet), followed by an end-to-end synthesis.
     public async Task<string> ExplainChainAsync(
@@ -262,6 +289,14 @@ public class Explainer
         var synthText = await Ask(synth.ToString());
         sb.AppendLine("## End-to-end logic");
         sb.AppendLine(synthText.Trim());
+
+        var simple = await SimplifyForKid(synthText);   // a second, plain-words pass
+        if (!string.IsNullOrWhiteSpace(simple))
+        {
+            sb.AppendLine();
+            sb.AppendLine("## In plain words");
+            sb.AppendLine(simple.Trim());
+        }
 
         if (!string.IsNullOrWhiteSpace(goal))
         {

@@ -292,7 +292,7 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--annotate` / `--why` | trace | off | short LLM "why" note per hop (depth-aware); implies `--with-bodies` |
 | `--no-llm` | trace+explain | off | trace: deterministic only; explain: dump Roslyn context, no model |
 | `--max-steps` | trace | `25` | agent step limit |
-| `--summary` | trace | off | LLM summary section at the end (purpose, dependencies, good-to-know); in the saved file |
+| `--summary` | trace | off | LLM summary (purpose, dependencies, good-to-know) + an "In plain words" (ELI10) recap; in the saved file |
 | `--repo-url` | trace+explain | — | render locations as clickable links to the repo |
 | `--peek` | explain | — | in the `--no-llm` dump, show first N lines per method instead of the full body |
 | `-m, --model` | both | `gemma4:latest` | model name |

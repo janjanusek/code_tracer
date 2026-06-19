@@ -67,6 +67,8 @@ dotnet run -- explain -s App.sln --method "TaxEngine.Calculate" --depth 3 --out 
 - **`--depth N ≥ 1`** → follows the call chain N levels down; **each method is explained on its
   own**, then a final **end-to-end synthesis**. At depth ≥ 1 it also lists the method's **callers**.
 - Long methods (> 400 lines) are explained **block by block**, then summarized.
+- Every explanation ends with an **"In plain words"** recap — a short, jargon-free "explain
+  like I'm 10" version of what the code is for and what the point of it is.
 
 ### Properties
 
@@ -107,7 +109,7 @@ loop is a fallback for interface/DI/reflection cases. The output is the path, ho
 | `--all-paths` (`--brute`) | enumerate **all** distinct paths, not just the first/shortest |
 | `--with-bodies` (`--code`) | between hops, show each method's code from its start down to the call to the next hop; **param names** in signatures; **arg → param** mapping at each call site; the **target** node shows its full body |
 | `--annotate` (`--why`) | a short LLM **"why" note per hop** (depth-aware: it sees the prior steps); trivial hops get none. Implies `--with-bodies` |
-| `--summary` | a final **Summary** section: purpose, dependencies, "good to know". Added to the output and the saved file |
+| `--summary` | a final **Summary** (purpose, dependencies, "good to know") **followed by an "In plain words" recap** — a 2-4 sentence "explain like I'm 10" version. Both go to the output / saved file |
 | `--repo-url <base>` | turn every `file:line` into a clickable link, e.g. `https://github.com/you/repo/blob/main` |
 | `--no-llm` | deterministic only — no model (works even if Ollama is down) |
 | `--out <file>` | save the result to a file |

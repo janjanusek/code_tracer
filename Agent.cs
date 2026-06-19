@@ -322,7 +322,12 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             Console.Error.WriteLine("[summary] summarizing the chain...");
             var summary = await SummarizeChain(pathText);
             if (!string.IsNullOrWhiteSpace(summary))
+            {
                 output += "\n\n## Summary\n" + summary.Trim();
+                var simple = await SimplifyForKid(summary);     // a second, plain-words pass
+                if (!string.IsNullOrWhiteSpace(simple))
+                    output += "\n\n## In plain words\n" + simple.Trim();
+            }
         }
 
         Console.WriteLine($"\n========== DONE ({reason}) ==========");
@@ -361,6 +366,26 @@ fall back to find_callers from the target going UP one hop at a time, then finis
             }, new ChatOptions { Temperature = 0.2, NumPredict = 2048 }, "summary")).Trim();
         }
         catch (Exception ex) { return $"_(summary unavailable: {ex.Message})_"; }
+    }
+
+    /// A second, very simple "explain like I'm 10" pass over the full summary - what the path is
+    /// for and why it goes from start to end, in plain words. Cheap (short input/output).
+    private async Task<string> SimplifyForKid(string fullSummary)
+    {
+        try
+        {
+            var prompt =
+                "Here is a technical summary of a code path:\n\n" + fullSummary + "\n\n" +
+                "Now say it again VERY simply - as if to a smart 10-year-old. In 2-4 short sentences, " +
+                "plain words, no jargon: what is this code for, and why does it go from the start to " +
+                "the end (what's the point)?";
+            return (await _llm.ChatAsync(new[]
+            {
+                new ChatMsg("system", "You explain technical things in very simple, plain language. No jargon."),
+                new ChatMsg("user", prompt)
+            }, new ChatOptions { Temperature = 0.3, NumPredict = 300 }, "eli10")).Trim();
+        }
+        catch { return ""; }
     }
 
     // ---- deterministic bootstrap -----------------------------------------
