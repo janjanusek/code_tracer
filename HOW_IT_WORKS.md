@@ -188,7 +188,9 @@ so an engineer grasps the *shape* before reading the prose. It is rendered **two
 - a **Mermaid** block (` ```mermaid `) that renders as real graphics on GitHub / VS Code.
 
 The **entry** is tagged `◆ start`, the **target / leaf** `★ target`, and every node carries its
-`file:line`. The layout adapts to the finding:
+`file:line`. When `trace --annotate` has already produced per-hop "why" notes, the diagram
+**reuses** them inline (`— …` after each node) — it never generates them itself, so the richer
+chart costs no extra model calls. The layout adapts to the finding:
 
 - a single straight path (`trace` default) → **vertical boxes** (the README look);
 - a branching shape — a `trace --all-paths` fan-out (e.g. one branch per DI implementation,

@@ -225,7 +225,9 @@ of what the analysis found, so you grasp the *shape* before reading the prose. I
 - a **Mermaid** block (` ```mermaid `) — renders as real graphics on GitHub / VS Code.
 
 The **start** node is tagged `◆ start`, the **target / leaf** `★ target`, and every node carries
-its `file:line`. The layout adapts to what was found:
+its `file:line`. If you ran `trace --annotate`, the per-hop **"why" one-liner is reused** on each
+node (`— …`), so the chart explains the whole path at a glance — for free, no extra model calls.
+The layout adapts to what was found:
 
 - **`trace`, one straight path** → vertical boxes:
 

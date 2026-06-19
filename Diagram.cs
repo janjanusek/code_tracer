@@ -18,6 +18,7 @@ public static class Diagram
         public required string Label;    // shown text
         public string Where = "";        // file:line, if known
         public string Role = "";         // "entry" | "target" | ""
+        public string Note = "";         // one-line "why" (reused from --annotate; never generated here)
     }
 
     /// A tiny directed graph of the finding (entry -> ... -> target), shared by both renderers.
@@ -27,15 +28,16 @@ public static class Diagram
         public readonly List<Node> Nodes = new();
         public readonly List<(string from, string to)> Edges = new();
 
-        public Node Add(string id, string label, string where = "", string role = "")
+        public Node Add(string id, string label, string where = "", string role = "", string note = "")
         {
             if (_byId.TryGetValue(id, out var n))
             {
                 if (n.Where.Length == 0 && where.Length > 0) n.Where = where;
                 if (n.Role.Length == 0 && role.Length > 0) n.Role = role;     // never downgrade
+                if (n.Note.Length == 0 && note.Length > 0) n.Note = note;     // first note wins
                 return n;
             }
-            var node = new Node { Id = id, Label = label, Where = where, Role = role };
+            var node = new Node { Id = id, Label = label, Where = where, Role = role, Note = note };
             _byId[id] = node; Nodes.Add(node);
             return node;
         }
@@ -68,9 +70,15 @@ public static class Diagram
     public static string Section(Graph g, string caption)
     {
         if (g.Nodes.Count < 2) return "";
+        // The diagram itself makes no model call. If --annotate already produced per-hop notes we
+        // reuse them inline (one line explains each node) - free, no extra calls.
+        bool hasNotes = g.Nodes.Any(n => n.Note.Length > 0);
+        var origin = hasNotes
+            ? "flow from Roslyn; the one-line note on each node is reused from --annotate (no extra calls)"
+            : "deterministic, straight from Roslyn (no model)";
         var sb = new StringBuilder();
         sb.AppendLine("## Call-flow");
-        sb.AppendLine($"_{caption} — deterministic, straight from Roslyn (no model)._");
+        sb.AppendLine($"_{caption} — {origin}._");
         sb.AppendLine();
         sb.AppendLine("```text");
         sb.AppendLine(Ascii(g).TrimEnd());
@@ -124,7 +132,7 @@ public static class Diagram
             if (toks.Count == 0) continue;
             for (int i = 0; i < toks.Count; i++)
             {
-                g.Add(toks[i].name, toks[i].name, toks[i].where, i == 0 ? "entry" : "");
+                g.Add(toks[i].name, toks[i].name, toks[i].where, i == 0 ? "entry" : "", toks[i].note);
                 if (i > 0) g.Edge(toks[i - 1].name, toks[i].name);
             }
             ends.Add(toks[^1].name);
@@ -167,8 +175,9 @@ public static class Diagram
         for (int i = 0; i < order.Count; i++)
         {
             sb.AppendLine("┌" + bar + "┐");
-            var where = order[i].Where.Length > 0 ? "   " + order[i].Where : "";
-            sb.AppendLine("│ " + labels[i].PadRight(w) + " │" + where);
+            var trail = order[i].Where.Length > 0 ? "   " + order[i].Where : "";
+            if (order[i].Note.Length > 0) trail += "   — " + order[i].Note;   // reused --annotate one-liner
+            sb.AppendLine("│ " + labels[i].PadRight(w) + " │" + trail);
             if (i < order.Count - 1)
             {
                 int center = (w + 2) / 2;
@@ -184,7 +193,7 @@ public static class Diagram
     /// an indented tree with box-drawing connectors. Locations are aligned into a column.
     private static string AsciiTree(Graph g, List<string> roots)
     {
-        var rows = new List<(string text, string where)>();
+        var rows = new List<(string text, string where, string note)>();
         var stack = new HashSet<string>(StringComparer.Ordinal);
 
         void Walk(string nodeId, string prefix, bool isLast, bool isRoot)
@@ -193,9 +202,9 @@ public static class Diagram
             var n = g.ById(nodeId);
             if (n == null) return;
             var connector = isRoot ? "" : isLast ? "└─► " : "├─► ";
-            rows.Add((prefix + connector + LabelWithTag(n), n.Where));
+            rows.Add((prefix + connector + LabelWithTag(n), n.Where, n.Note));
 
-            if (stack.Contains(nodeId)) { rows.Add((prefix + (isRoot ? "" : "    ") + "↩ (cycle)", "")); return; }
+            if (stack.Contains(nodeId)) { rows.Add((prefix + (isRoot ? "" : "    ") + "↩ (cycle)", "", "")); return; }
             stack.Add(nodeId);
             var kids = g.Children(nodeId);
             var childPrefix = isRoot ? "" : prefix + (isLast ? "    " : "│   ");
@@ -206,10 +215,15 @@ public static class Diagram
 
         for (int i = 0; i < roots.Count; i++) Walk(roots[i], "", true, true);
 
+        // align file:line into a column; the reused --annotate one-liner (if any) trails after it.
         int col = rows.Where(r => r.where.Length > 0).Select(r => r.text.Length).DefaultIfEmpty(0).Max();
         var sb = new StringBuilder();
-        foreach (var (text, where) in rows)
-            sb.AppendLine(where.Length > 0 ? text.PadRight(col + 2) + where : text);
+        foreach (var (text, where, note) in rows)
+        {
+            var line = where.Length > 0 ? text.PadRight(col + 2) + where : text;
+            if (note.Length > 0) line += "   — " + note;
+            sb.AppendLine(line);
+        }
         return sb.ToString();
     }
 
@@ -304,20 +318,34 @@ public static class Diagram
         new(@"^\s*\*{0,2}(\d+)\.\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+)\s*\(", RegexOptions.Compiled);
     private static readonly Regex WhereRe =
         new(@"([A-Za-z0-9_./\\-]+\.cs:\d+)", RegexOptions.Compiled);
+    // the --annotate "why" note that follows a hop: "> _Executes the model-requested tool call_"
+    private static readonly Regex NoteRe =
+        new(@"^\s*>\s*(.+?)\s*$", RegexOptions.Compiled);
 
-    /// Pulls the ordered (Type.Method, file:line) nodes out of one rendered path segment.
-    private static List<(string name, string where)> ExtractNodes(string segment)
+    /// Pulls the ordered (Type.Method, file:line, why-note) nodes out of one rendered path segment.
+    /// The note is only present when --annotate ran (we reuse it; we never generate one here).
+    private static List<(string name, string where, string note)> ExtractNodes(string segment)
     {
-        var result = new List<(string, string)>();
+        var result = new List<(string name, string where, string note)>();
         foreach (var line in segment.Replace("\r\n", "\n").Split('\n'))
         {
             var m = NodeRe.Match(line);
-            if (!m.Success) continue;
-            var name = m.Groups[2].Value;
-            // location = first file.cs:line on the line AFTER the matched name (skip params/sig)
-            var rest = line.Substring(Math.Min(m.Index + m.Length, line.Length));
-            var w = WhereRe.Match(rest);
-            result.Add((name, w.Success ? w.Groups[1].Value : ""));
+            if (m.Success)
+            {
+                var name = m.Groups[2].Value;
+                // location = first file.cs:line on the line AFTER the matched name (skip params/sig)
+                var rest = line.Substring(Math.Min(m.Index + m.Length, line.Length));
+                var w = WhereRe.Match(rest);
+                result.Add((name, w.Success ? w.Groups[1].Value : "", ""));
+                continue;
+            }
+            // a "> _note_" line attaches to the hop just above it (if it doesn't have one yet)
+            var nm = NoteRe.Match(line);
+            if (nm.Success && result.Count > 0 && result[^1].note.Length == 0)
+            {
+                var note = nm.Groups[1].Value.Trim().Trim('_', '*', '`', ' ');
+                if (note.Length > 0) result[^1] = (result[^1].name, result[^1].where, note);
+            }
         }
         return result;
     }
