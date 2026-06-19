@@ -471,6 +471,9 @@ against CodeTracer's own source** — open them and you see exactly what you get
 - **[`examples/explain-gemma3n-e2b-example.md`](examples/explain-gemma3n-e2b-example.md)** — the
   **same `explain`** on a **micro model** (`gemma3n:e2b`): ~3.4 min vs ~27 min (**≈7.8× faster**),
   terser but coherent — compare a tiny local model against `gemma4:latest` side by side.
+- **[`examples/trace-gemma3n-e2b-example.md`](examples/trace-gemma3n-e2b-example.md)** — the **same
+  `trace`** on `gemma3n:e2b`: barely slower than `gemma4:latest` here (path-finding is deterministic;
+  the model only writes the notes + summary), so `trace` is a great fit for a small local model.
 
 Every run also **auto-saves** (no `--out` needed) and **saves incrementally**, so a long deep run
 is never lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and keep what's done.
