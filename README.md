@@ -401,7 +401,7 @@ a locked-down machine — no GPU, no cloud AI allowed. If you'd like help **appl
 codebase**, or **adapting the approach** (Roslyn as the source of truth + a small local model)
 inside your organisation, I offer consulting.
 
-<img src="docs/jan-janusek.jpg" alt="Ján Janušek" width="128" align="left" hspace="16" vspace="4" />
+<img src="docs/jan.janusek.png" alt="Ján Janušek" width="128" align="left" hspace="16" vspace="4" />
 
 **Ing. Ján Janušek** — CEO & Founder
 
