@@ -294,15 +294,16 @@ static async Task<int> RunMap(Options opts)
         if (!down && !doUp) continue;
 
         Console.Error.WriteLine($"[map] building {(down ? "downstream (callees)" : "upstream (callers)")} map ...");
-        var built = await index.BuildMap(cls, method, opts.File, opts.Line, down, depth, opts.MaxNodes);
+        var built = await index.BuildMap(cls, method, opts.File, opts.Line, down, depth, opts.MaxNodes,
+                                         opts.WithBodies, opts.Peek);
         if (built == null)
         {
             Console.Error.WriteLine("[error] root method not found (or has no source available).");
             return 1;
         }
-        var (graph, truncated) = built.Value;
+        var (graph, truncated, bodies) = built.Value;
 
-        var text = RenderMapDoc(graph, down, depth, truncated);
+        var text = RenderMapDoc(graph, down, depth, truncated, bodies);
         // single direction honours --out; both directions always auto-name (can't share one path)
         var outPath = (!both && !string.IsNullOrWhiteSpace(opts.Out))
             ? opts.Out!
@@ -325,7 +326,8 @@ static async Task<int> RunMap(Options opts)
 }
 
 // Self-describing markdown for one direction of a map (so a saved file makes sense on its own).
-static string RenderMapDoc(Diagram.Graph graph, bool down, int depth, bool truncated)
+static string RenderMapDoc(Diagram.Graph graph, bool down, int depth, bool truncated,
+                           List<(string display, string where, string code)> bodies)
 {
     var root = graph.Nodes.Count > 0 ? graph.Nodes[0] : null;
     var rootLabel = root?.Label ?? "?";
@@ -349,6 +351,22 @@ static string RenderMapDoc(Diagram.Graph graph, bool down, int depth, bool trunc
             : "_No in-solution callers — this looks like an entry-point (route handler, DI, reflection, or tests)._");
     else
         sb.AppendLine(section);
+
+    // --with-bodies: the real source of every method in the map, in BFS order, under the diagram.
+    if (bodies.Count > 0)
+    {
+        sb.AppendLine();
+        sb.AppendLine("## Method bodies");
+        sb.AppendLine($"_Real source of each method in the map ({bodies.Count}), deterministic — in the order reached._");
+        foreach (var (display, where, code) in bodies)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"### {display}{(where.Length > 0 ? $"  ({where})" : "")}");
+            sb.AppendLine("```csharp");
+            sb.AppendLine(code.TrimEnd());
+            sb.AppendLine("```");
+        }
+    }
     return sb.ToString();
 }
 
@@ -405,6 +423,11 @@ static string Ask(string prompt)
 static Options ParseArgs(string[] args)
 {
     var o = new Options();
+    // Tolerate a leading "--" (habit from `dotnet run -- …`): with the codetracer launcher there's no
+    // `dotnet run` to consume it, so a stray "--" would otherwise become the command and silently fall
+    // back to `trace`. Drop it so `codetracer -- map …` still runs map.
+    while (args.Length > 0 && args[0] == "--")
+        args = args.Skip(1).ToArray();
     int start = 0;
     if (args.Length > 0 && (args[0] == "explain" || args[0] == "trace" || args[0] == "map"))
     {
@@ -530,6 +553,9 @@ MAP options:    (deterministic overview - which methods a point reaches; no mode
       --depth N       how deep to follow the graph (default: very deep; --max-nodes is the real guard)
       --max-nodes N   hard cap on the map size so a huge graph can't explode (default 400; said out
                       loud when hit). Each result is an ASCII tree AND a Mermaid graph.
+      --with-bodies   (--code) also dump each method's REAL source under the diagram, in the order
+                      reached (deterministic, no model). Use --peek to cap lines per method.
+      --peek N        with --with-bodies: show only the first N lines of each method body
       --out           single direction only: save to this path (both directions always auto-name)
 
 SHARED options:

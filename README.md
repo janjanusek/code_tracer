@@ -383,6 +383,8 @@ codetracer map -s CodeTracer.sln --method "LlmClient.ChatAsync" --up --out who-c
   **heavy**, `map` is deterministic by design — for a deep dive on any node, run `explain`/`trace` on it.
 - **`--depth N`** — how deep to follow (default: very deep); **`--max-nodes N`** is the real guard
   (default 400, and it says so on stderr when it caps — never a silent truncation).
+- **`--with-bodies`** (`--code`) — also append **every method's real source** under the diagram, in
+  the order reached (deterministic, no model). Add **`--peek N`** to cap each body to N lines.
 
 Each result is an **ASCII tree** (readable anywhere) **and** a **Mermaid graph** (renders as graphics
 on GitHub / VS Code). **→ Full example:** [`examples/map-full-example.md`](examples/map-full-example.md)
@@ -454,7 +456,7 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
 | `--from` / `--to` | trace | — | direct mode: path from `Class.Method` to `Class.Method` |
 | `--all-paths` / `--brute` | trace | off | enumerate ALL distinct paths, not just the first |
-| `--with-bodies` / `--code` | trace | off | insert each method's code (start → call to next hop) between steps; show param names + arg→param mapping |
+| `--with-bodies` / `--code` | trace+map | off | trace: insert each method's code (start → call to next hop) between steps; map: dump every method's real source under the diagram (deterministic) |
 | `--annotate` / `--why` | trace | off | short LLM "why" note per hop (depth-aware); implies `--with-bodies` |
 | `--no-llm` | trace+explain | off | trace: deterministic only; explain: dump Roslyn context, no model |
 | `--max-steps` | trace | `25` | agent step limit |
@@ -464,7 +466,7 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--up` / `--callers` | map | — | map only upstream (callers / impact); default with no flag = BOTH, as two files |
 | `--max-nodes` | map | `400` | hard cap on map size (said out loud when hit, never silent) |
 | `--repo-url` | trace+explain | — | render locations as clickable links to the repo |
-| `--peek` | explain | — | in the `--no-llm` dump, show first N lines per method instead of the full body |
+| `--peek` | explain+map | — | explain (`--no-llm` dump) / map (`--with-bodies`): show first N lines per method instead of the full body |
 | `-m, --model` | both | `gemma4:latest` | model name |
 | `-a, --api` | both | `http://localhost:11434` | server base URL |
 | `--api-style` | both | `ollama` | `ollama` \| `openai` (LM Studio) |

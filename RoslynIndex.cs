@@ -886,9 +886,9 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
     /// (down=false) breadth-first up to `maxDepth`, hard-capped at `maxNodes`. Deterministic (no model).
     /// `down` decides edge direction so the tree always reads top→bottom in calling order. Returns null
     /// if the root can't be resolved; the out `truncated` flag reports whether the node cap was hit.
-    public async Task<(Diagram.Graph graph, bool truncated)?> BuildMap(
+    public async Task<(Diagram.Graph graph, bool truncated, List<(string display, string where, string code)> bodies)?> BuildMap(
         string? className, string? methodName, string? filePath, int line,
-        bool down, int maxDepth, int maxNodes)
+        bool down, int maxDepth, int maxNodes, bool withBodies = false, int peek = 0)
     {
         var root = className != null
             ? await ResolveMethod(className, methodName!)
@@ -910,6 +910,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         // down: root is where you START (◆); up: root is what everything REACHES (★ target at the bottom).
         g.Add(Display(root), Display(root), Where(root), down ? "entry" : "target");
 
+        var nodeSyms = new List<IMethodSymbol> { root };   // unique methods in BFS order (for --with-bodies)
         bool truncated = false;
         while (queue.Count > 0 && !truncated)
         {
@@ -924,6 +925,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
                 g.Add(Display(nb), Display(nb), Where(nb));
                 g.Edge(from, to);
                 if (!visited.Add(nb)) continue;                 // already mapped (cycle / shared callee)
+                nodeSyms.Add(nb);
                 if (g.Nodes.Count >= maxNodes) { truncated = true; break; }
                 queue.Enqueue((nb, lvl + 1));
             }
@@ -931,7 +933,26 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         if (truncated)
             Console.Error.WriteLine($"[map] hit the {maxNodes}-node cap - graph truncated here. " +
                                     "Raise --max-nodes (or lower --depth) for a different cut.");
-        return (g, truncated);
+
+        // --with-bodies: pull each unique method's real source (deterministic), peek-limited if asked.
+        var bodies = new List<(string display, string where, string code)>();
+        if (withBodies)
+            foreach (var m in nodeSyms)
+            {
+                var gb = await GetBody(m);
+                var code = gb?.node.ToString() ?? "// (no source available)";
+                if (peek > 0) code = PeekLines(code, peek);
+                bodies.Add((Display(m), Where(m), code));
+            }
+        return (g, truncated, bodies);
+    }
+
+    /// First N lines of a code block, with a note when clipped (used by map --with-bodies --peek).
+    private static string PeekLines(string code, int n)
+    {
+        var lines = code.Replace("\r\n", "\n").Split('\n');
+        if (lines.Length <= n) return code;
+        return string.Join("\n", lines.Take(n)) + $"\n// … (+{lines.Length - n} more lines — raise --peek)";
     }
 
     private async Task<MethodContext?> BuildMethodContextFor(IMethodSymbol m, int depth = 0)
