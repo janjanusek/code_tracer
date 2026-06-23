@@ -275,6 +275,11 @@ public static class Diagram
 
         var sb = new StringBuilder();
         sb.AppendLine("```mermaid");
+        // useMaxWidth:false -> render at natural size instead of being scaled down to the text column
+        // (Mermaid's default). The uniform downscale is what squashes the HEIGHT on wide charts; turning
+        // it off restores full height (+ horizontal scroll). rankSpacing is the vertical gap between
+        // levels = the main height lever; nodeSpacing (horizontal) stays small since width is fine.
+        sb.AppendLine("%%{init: {\"flowchart\": {\"useMaxWidth\": false, \"nodeSpacing\": 35, \"rankSpacing\": 80}}}%%");
         sb.AppendLine("flowchart TD");
         foreach (var n in g.Nodes)
             sb.AppendLine($"    {mid[n.Id]}[\"{Esc(n.Label)}\"]");
