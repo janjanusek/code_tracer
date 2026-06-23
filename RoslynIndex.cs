@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
@@ -21,33 +22,80 @@ public class RoslynIndex
     public async Task LoadAsync(string solutionPath, bool offline = false)
     {
         SolutionDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)) ?? "";
+        Console.Error.WriteLine($"[index] loading solution: {solutionPath}");
 
-        MSBuildWorkspace workspace;
+        // Offline: reuse what Visual Studio already restored - resolve packages ONLY from the local
+        // caches, with NO remote source, so loading never contacts a (private/auth) feed.
+        ImmutableDictionary<string, string>? props = null;
         if (offline)
         {
-            // Reuse what Visual Studio already restored: resolve packages ONLY from the local caches,
-            // with NO remote source -> loading never contacts a (private/auth) feed. RestoreConfigFile
-            // is a global MSBuild property, so any restore/resolve during evaluation uses our config.
             var cfg = WriteOfflineNuGetConfig();
             Console.Error.WriteLine($"[index] offline: reusing the local NuGet cache only, no feed (config: {cfg})");
-            workspace = MSBuildWorkspace.Create(new Dictionary<string, string> { ["RestoreConfigFile"] = cfg });
-        }
-        else
-        {
-            workspace = MSBuildWorkspace.Create();
+            props = ImmutableDictionary<string, string>.Empty.Add("RestoreConfigFile", cfg);
         }
 
-        workspace.WorkspaceFailed += (_, e) =>
+        var workspace = CreateWorkspace(props);
+        try
         {
-            // Warnings during load are common (missing analyzers, etc.) - just log them.
+            _solution = await workspace.OpenSolutionAsync(solutionPath);
+        }
+        catch (Exception ex)
+        {
+            // OpenSolutionAsync is all-or-nothing: a single illegal edge (e.g. a circular project
+            // reference - VS allows it, Roslyn's immutable Solution model does not) drops the WHOLE
+            // solution. Fall back to rebuilding the graph from project infos, keeping every project
+            // and dropping ONLY the offending references.
+            Console.Error.WriteLine($"[index] whole-solution load failed: {FirstLine(ex.Message)}");
+            Console.Error.WriteLine("[index] rebuilding graph, dropping only the bad (cyclic/duplicate) project references...");
+            workspace.Dispose();
+            _solution = await LoadResilient(props, solutionPath);
+        }
+
+        var projCount = _solution.Projects.Count();
+        Console.Error.WriteLine($"[index] projects loaded: {projCount}");
+    }
+
+    private static MSBuildWorkspace CreateWorkspace(ImmutableDictionary<string, string>? props)
+    {
+        var ws = props != null ? MSBuildWorkspace.Create(props) : MSBuildWorkspace.Create();
+        ws.WorkspaceFailed += (_, e) =>
+        {
+            // Warnings during load are common (missing analyzers, package TFM mismatches, etc.) - log only.
             if (e.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
                 Console.Error.WriteLine($"[workspace] {e.Diagnostic.Message}");
         };
+        return ws;
+    }
 
-        Console.Error.WriteLine($"[index] loading solution: {solutionPath}");
-        _solution = await workspace.OpenSolutionAsync(solutionPath);
-        var projCount = _solution.Projects.Count();
-        Console.Error.WriteLine($"[index] projects loaded: {projCount}");
+    /// Resilient load: evaluate every project, then re-assemble the Solution graph by hand, skipping
+    /// any project reference that Roslyn rejects (a cycle / duplicate). Every project still loads, so
+    /// callers/callees analysis works across the whole solution except the few dropped edges.
+    private async Task<Solution> LoadResilient(ImmutableDictionary<string, string>? props, string solutionPath)
+    {
+        var workspace = CreateWorkspace(props);
+        var loader = props != null ? new MSBuildProjectLoader(workspace, props) : new MSBuildProjectLoader(workspace);
+        var info = await loader.LoadSolutionInfoAsync(solutionPath);
+
+        var sol = workspace.CurrentSolution;
+        foreach (var pi in info.Projects)                               // add projects WITHOUT refs first
+            sol = sol.AddProject(pi.WithProjectReferences(Array.Empty<ProjectReference>()));
+
+        int dropped = 0;
+        foreach (var pi in info.Projects)                               // then add refs, skipping bad ones
+            foreach (var pref in pi.ProjectReferences)
+            {
+                try { sol = sol.AddProjectReference(pi.Id, pref); }
+                catch { dropped++; }                                    // cyclic/duplicate -> keep both projects, drop the edge
+            }
+        if (dropped > 0)
+            Console.Error.WriteLine($"[index] dropped {dropped} cyclic/duplicate project reference(s) - analysis works across the rest.");
+        return sol;
+    }
+
+    private static string FirstLine(string s)
+    {
+        var i = s.IndexOfAny(new[] { '\r', '\n' });
+        return i < 0 ? s : s.Substring(0, i);
     }
 
     /// Writes a throwaway nuget.config that resolves packages ONLY from the machine's existing caches
