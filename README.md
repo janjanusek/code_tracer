@@ -69,23 +69,23 @@ docker compose up -d
 ## Build & run
 
 ```bash
-dotnet build                              # builds BOTH net8.0 and net472
+dotnet build                                        # builds BOTH net8.0 and net472
+.\codetracer map -s Big.sln --method "Foo.Bar"      # run with NO framework flag (Windows .cmd)
+./codetracer.ps1 map -s Big.sln --method "Foo.Bar"  # PowerShell / Linux / macOS
 ```
 
-Then run **the built executable** — it auto-selects the right MSBuild for whatever solution you point
-it at, so you never choose a framework:
+`codetracer` (`.cmd` for Windows, `.ps1` cross-platform) is a thin launcher so you **never pass
+`--framework`**: it runs the net8.0 build, which **auto-switches** to the net472 build for classic /
+.NET Framework / mixed solutions (see [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions)).
+(`dotnet run` can't choose a framework on a multi-target project — that's why the launcher exists.)
 
-```bash
-# Windows with Visual Studio / Build Tools — handles legacy, modern, AND mixed solutions:
-bin\Debug\net472\CodeTracer.exe <command> [options]
+> The `[cfg]` / `[index]` / `[map]` lines are progress on **stderr**; Windows PowerShell colours them
+> red — that's normal, not an error (the exit code is `0` on success).
 
-# A box with only the .NET SDK (no VS — Linux/CI, or a VDI): use the net8.0 build. If it meets a
-# classic non-SDK project it re-launches the net472 build automatically.
-dotnet bin/Debug/net8.0/CodeTracer.dll <command> [options]
-```
-
-`dotnet run` also works for quick dev, but because the project multi-targets you must say which
-framework: `dotnet run -f net8.0 -- <command>` (or `-f net472`). `--help` lists all options.
+Prefer to skip the launcher? Run a build directly:
+- `bin\Debug\net472\CodeTracer.exe <cmd>` — Windows + VS: this one build loads legacy, modern, and mixed.
+- `dotnet bin/Debug/net8.0/CodeTracer.dll <cmd>` — SDK-only boxes; auto-switches to net472 for legacy.
+- `dotnet run -f net8.0 -- <cmd>` — quick dev (`dotnet run` requires the `-f`). `--help` lists all options.
 
 The default API is `http://localhost:11434` (native Ollama `/api/chat`). It also accepts
 the `.../v1` form — it gets normalized. For **LM Studio**, add `--api-style openai`

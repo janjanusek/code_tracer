@@ -23,10 +23,14 @@ is handed. No GPU, no cloud.
 
 ```bash
 dotnet build                                   # builds net8.0 + net472
-bin\Debug\net472\CodeTracer.exe <command> [options]    # Windows+VS: loads any solution (recommended)
-dotnet bin/Debug/net8.0/CodeTracer.dll <command>       # no-VS box: SDK solutions (auto-routes if legacy)
-dotnet run -f net8.0 -- --help                 # quick dev (multi-target needs -f)
+.\codetracer <command> [options]               # Windows: run with NO framework flag (codetracer.cmd)
+./codetracer.ps1 <command> [options]           # PowerShell / Linux / macOS
+# the launcher runs net8.0 and auto-switches to net472 for legacy/mixed solutions. Alternatives:
+bin\Debug\net472\CodeTracer.exe <command>      # Windows+VS: one build loads any solution
+dotnet bin/Debug/net8.0/CodeTracer.dll <command>   # no-VS box: SDK solutions (auto-routes if legacy)
+dotnet run -f net8.0 -- --help                 # quick dev (`dotnet run` needs -f on a multi-target)
 ```
+(Progress is on stderr — Windows PowerShell shows `[cfg]`/`[index]` lines in red; that's not an error.)
 
 The default API is `http://localhost:11434` (native Ollama). For LM Studio:
 `-a http://localhost:1234 --api-style openai`.

@@ -61,8 +61,10 @@ Run the same one command you'd use for any solution. `--offline` tells CodeTrace
 **only** from the caches VS just filled and to contact **no** feed:
 
 ```bash
-bin\Debug\net8.0\CodeTracer.dll  map -s BigShop.sln --method "OrderService.PlaceOrder" --down --offline
-# (or just call bin\Debug\net472\CodeTracer.exe directly — on a VS box it loads everything anyway)
+# the launcher runs with NO framework flag and auto-switches to net472 for this legacy solution:
+.\codetracer map -s BigShop.sln --method "OrderService.PlaceOrder" --down --offline
+# equivalent without the launcher (one build that loads everything on a VS box):
+bin\Debug\net472\CodeTracer.exe map -s BigShop.sln --method "OrderService.PlaceOrder" --down --offline
 ```
 
 Console (illustrative):
