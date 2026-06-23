@@ -67,7 +67,7 @@ public static class Diagram
 
     /// Renders the full "## Call-flow" section (ASCII + Mermaid) for a graph, or "" if there's nothing
     /// worth drawing (fewer than 2 nodes — a lone box helps no one).
-    public static string Section(Graph g, string caption)
+    public static string Section(Graph g, string caption, bool fullAscii = false)
     {
         if (g.Nodes.Count < 2) return "";
         // The diagram itself makes no model call. If --annotate already produced per-hop notes we
@@ -80,9 +80,25 @@ public static class Diagram
         sb.AppendLine("## Call-flow");
         sb.AppendLine($"_{caption} — {origin}._");
         sb.AppendLine();
-        sb.AppendLine("```text");
-        sb.AppendLine(Ascii(g).TrimEnd());
-        sb.AppendLine("```");
+        // map's full tree can be long: wrap it in a foldable <details> (open) so it collapses like an
+        // IDE node on GitHub / VS Code, while staying plain-readable as text. trace/explain inline it.
+        if (fullAscii)
+        {
+            sb.AppendLine("<details open>");
+            sb.AppendLine("<summary>ASCII call tree — click to fold</summary>");
+            sb.AppendLine();
+            sb.AppendLine("```text");
+            sb.AppendLine(Ascii(g, fullAscii).TrimEnd());
+            sb.AppendLine("```");
+            sb.AppendLine();
+            sb.AppendLine("</details>");
+        }
+        else
+        {
+            sb.AppendLine("```text");
+            sb.AppendLine(Ascii(g, fullAscii).TrimEnd());
+            sb.AppendLine("```");
+        }
         sb.AppendLine();
         sb.AppendLine(Mermaid(g));
         return sb.ToString().TrimEnd();
@@ -148,10 +164,10 @@ public static class Diagram
 
     // ---- ASCII renderer ------------------------------------------------------------------------
 
-    private static string Ascii(Graph g)
+    private static string Ascii(Graph g, bool fullAscii)
     {
         var roots = g.Roots();
-        return IsLinearChain(g, roots) ? AsciiBoxes(g, roots[0]) : AsciiTree(g, roots);
+        return IsLinearChain(g, roots) ? AsciiBoxes(g, roots[0]) : AsciiTree(g, roots, fullAscii);
     }
 
     /// A single straight path A -> B -> C: pretty vertical boxes (the README look).
@@ -191,20 +207,25 @@ public static class Diagram
 
     /// Branching flow (a call-tree, or several paths that fan out / converge — e.g. DI implementations):
     /// an indented tree with box-drawing connectors. Locations are aligned into a column.
-    // The ASCII tree is the at-a-glance view; the Mermaid block below it is ALWAYS complete. Cap the rows
-    // so a huge graph (e.g. a deep `map`) can't produce a wall of text - but say so, never truncate silently.
+    // For trace/explain the ASCII tree is an at-a-glance view (the Mermaid block below is always complete),
+    // so it's row-capped to avoid a wall of text. `map` is the deliberate full-reachability view: there we
+    // render the WHOLE tree (fullAscii) and never truncate it - we only collapse a subtree that was already
+    // drawn elsewhere into a one-line "↑ shown above" reference, so a re-converging (DAG) graph stays
+    // bounded by node count instead of expanding every path.
     private const int MaxAsciiRows = 200;
 
-    private static string AsciiTree(Graph g, List<string> roots)
+    private static string AsciiTree(Graph g, List<string> roots, bool fullAscii)
     {
         var rows = new List<(string text, string where, string note)>();
-        var stack = new HashSet<string>(StringComparer.Ordinal);
+        var stack = new HashSet<string>(StringComparer.Ordinal);    // nodes on the current path (cycle guard)
+        var expanded = new HashSet<string>(StringComparer.Ordinal); // nodes whose subtree was already drawn
+        int maxRows = fullAscii ? int.MaxValue : MaxAsciiRows;       // map: show it all, never truncate
         bool capped = false;
 
         void Walk(string nodeId, string prefix, bool isLast, bool isRoot)
         {
             if (capped) return;
-            if (rows.Count >= MaxAsciiRows)
+            if (rows.Count >= maxRows)
             {
                 rows.Add(("… (tree truncated here — the Mermaid graph below shows the full set)", "", ""));
                 capped = true;
@@ -213,10 +234,16 @@ public static class Diagram
             var n = g.ById(nodeId);
             if (n == null) return;
             var connector = isRoot ? "" : isLast ? "└─► " : "├─► ";
-            rows.Add((prefix + connector + LabelWithTag(n), n.Where, n.Note));
+
+            // Already drawn this node's subtree (fullAscii/map only)? Reference it instead of re-expanding,
+            // so the tree can't blow up exponentially on a dense graph while still showing every node.
+            bool repeat = fullAscii && expanded.Contains(nodeId) && g.Children(nodeId).Count > 0;
+            rows.Add((prefix + connector + LabelWithTag(n) + (repeat ? "  ↑ (shown above)" : ""), n.Where, n.Note));
+            if (repeat) return;
 
             if (stack.Contains(nodeId)) { rows.Add((prefix + (isRoot ? "" : "    ") + "↩ (cycle)", "", "")); return; }
             stack.Add(nodeId);
+            expanded.Add(nodeId);
             var kids = g.Children(nodeId);
             var childPrefix = isRoot ? "" : prefix + (isLast ? "    " : "│   ");
             for (int i = 0; i < kids.Count; i++)
@@ -292,7 +319,7 @@ public static class Diagram
         var sig = dash > 0 ? callee[..dash] : callee;
         var paren = sig.IndexOf('(');
         var name = (paren > 0 ? sig[..paren] : sig).Trim();
-        return name.Contains('.') ? name : null;
+        return name.IndexOf('.') >= 0 ? name : null;
     }
 
     /// "...  - Type (Audit.cs:8)" -> "Audit.cs:8"

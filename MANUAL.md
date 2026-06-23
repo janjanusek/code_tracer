@@ -11,20 +11,44 @@ is handed. No GPU, no cloud.
 
 ## 1. Install & run
 
-1. **.NET 8 SDK or newer** (`dotnet --version`). The project targets `net8.0`, so it builds on a
-   .NET 8 SDK (e.g. a VDI) and a .NET 10 SDK; `RollForward=Major` lets the net8 binary run on a
-   newer runtime.
-2. **Ollama ≥ 0.5** (`ollama --version`) and a model: `ollama pull gemma4:latest`
+1. **.NET 8 SDK or newer** (`dotnet --version`). CodeTracer multi-targets `net8.0;net472`, so
+   `dotnet build` produces both: the **net8.0** build for SDK-style / modern .NET solutions (builds on
+   a .NET 8 or 10 SDK; `RollForward=Major`) and the **net472** build for classic .NET Framework / mixed
+   solutions.
+2. **For classic .NET Framework or mixed solutions:** **Visual Studio** or **Build Tools for Visual
+   Studio** (the full MSBuild). You never pass a framework flag — CodeTracer auto-detects the solution
+   type and switches to the net472 build itself (§ *Legacy / mixed solutions* below).
+3. **Ollama ≥ 0.5** (`ollama --version`) and a model: `ollama pull gemma4:latest`
    (or use the bundled `docker-compose.yml`).
 
 ```bash
-dotnet build
-dotnet run -- <command> [options]      # command = explain | trace
-dotnet run -- --help
+dotnet build                                   # builds net8.0 + net472
+.\codetracer.cmd <command> [options]           # Windows: run with NO framework flag
+./codetracer.ps1 <command> [options]           # PowerShell / Linux / macOS
+# the launcher runs net8.0 and auto-switches to net472 for legacy/mixed solutions. Alternatives:
+bin\Debug\net472\CodeTracer.exe <command>      # Windows+VS: one build loads any solution
+dotnet bin/Debug/net8.0/CodeTracer.dll <command>   # no-VS box: SDK solutions (auto-routes if legacy)
+dotnet run -f net8.0 -- --help                 # quick dev (`dotnet run` needs -f on a multi-target)
 ```
+(Progress is on stderr — Windows PowerShell shows `[cfg]`/`[index]` lines in red; that's not an error.)
 
 The default API is `http://localhost:11434` (native Ollama). For LM Studio:
 `-a http://localhost:1234 --api-style openai`.
+
+### Legacy / mixed solutions
+
+`MSBuildWorkspace` hosts one MSBuild family per process: net8.0 → SDK MSBuild (SDK-style projects
+only); net472 → full VS MSBuild (classic non-SDK / `packages.config` **and** SDK-style). CodeTracer
+reads the `.sln` and, if it sees a classic project while on .NET (Core), re-launches its **net472**
+build automatically (`[auto] … switching …`); needs VS / Build Tools installed. Override the located
+exe with the `CODETRACER_NET472` env var.
+
+CodeTracer never restores — it reads restore output. If VS already built the solution, **don't restore
+from the CLI at all**: run with **`--offline`** to reuse VS's NuGet cache and contact no feed (your
+`nuget.config` is untouched). Only if nothing is cached, add the feed's credentials to `nuget.config`
+(`dotnet nuget add source … -u … -p … --store-password-in-clear-text`), since the CLI doesn't share
+Visual Studio's stored credentials. A full walkthrough is in
+[`examples/legacy-framework-example.md`](examples/legacy-framework-example.md).
 
 ---
 

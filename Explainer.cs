@@ -454,7 +454,7 @@ public class Explainer
     private static async Task FlushPartial(StringBuilder sb, string? outPath)
     {
         if (string.IsNullOrWhiteSpace(outPath)) return;
-        try { await File.WriteAllTextAsync(outPath!, sb.ToString()); }
+        try { await Compat.WriteAllTextAsync(outPath!, sb.ToString()); }
         catch { /* ignore - partial-save is a safety net, not a hard requirement */ }
     }
 

@@ -39,11 +39,17 @@ It has **three modes**:
 
 ## Requirements
 
-1. **.NET 8 SDK or newer** — `dotnet --version`. The project targets **`net8.0`**, so it builds
-   on a .NET 8 SDK (e.g. a VDI) *and* a .NET 10 SDK. `RollForward=Major` lets the net8 binary
-   run on a newer runtime if no .NET 8 runtime is installed.
-2. **Ollama ≥ 0.5** (structured outputs) — `ollama --version`
-3. Model: `ollama pull gemma4:latest`
+1. **.NET 8 SDK or newer** — `dotnet --version`. CodeTracer multi-targets **`net8.0;net472`**, so
+   `dotnet build` produces **both** builds: **net8.0** for SDK-style / modern .NET solutions (runs on
+   a .NET 8 SDK — e.g. a VDI — *and* a .NET 10 SDK; `RollForward=Major`), and **net472** for **classic
+   .NET Framework / mixed** solutions. Building net472 needs nothing extra (reference assemblies come
+   via NuGet).
+2. **To analyze classic .NET Framework or mixed (Framework + Core) solutions** you also need the
+   **full MSBuild** — **Visual Studio** or **Build Tools for Visual Studio** installed. You don't pick
+   a framework: CodeTracer **auto-detects** the solution type and uses (or switches to) the right build
+   — see [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions).
+3. **Ollama ≥ 0.5** (structured outputs) — `ollama --version`
+4. Model: `ollama pull gemma4:latest`
 
 On a CPU-only machine with 32 GB RAM, a `--num-ctx` of 8–16K is safe; higher risks OOM.
 Smaller / more quantized models (e.g. a Q4 build) run faster but may fill the trace schema
@@ -63,14 +69,67 @@ docker compose up -d
 ## Build & run
 
 ```bash
-dotnet build
-dotnet run -- <command> [options]      # command = explain | trace
-dotnet run -- --help
+dotnet build                                        # builds BOTH net8.0 and net472
+.\codetracer.cmd map -s Big.sln --method "Foo.Bar"  # run with NO framework flag (Windows)
+./codetracer.ps1 map -s Big.sln --method "Foo.Bar"  # PowerShell / Linux / macOS
 ```
+
+`codetracer` (`.cmd` for Windows, `.ps1` cross-platform) is a thin launcher so you **never pass
+`--framework`**: it does a fast incremental **build** (so it's always fresh after a `git pull` — no
+separate `dotnet build` needed) and runs the net8.0 build, which **auto-switches** to the net472 build
+for classic / .NET Framework / mixed solutions (see [Legacy / mixed
+solutions](#legacy--mixed-net-framework-solutions)). (`dotnet run` can't choose a framework on a
+multi-target project — that's why the launcher exists.)
+
+> The `[cfg]` / `[index]` / `[map]` lines are progress on **stderr**; Windows PowerShell colours them
+> red — that's normal, not an error (the exit code is `0` on success).
+
+Prefer to skip the launcher? Run a build directly:
+- `bin\Debug\net472\CodeTracer.exe <cmd>` — Windows + VS: this one build loads legacy, modern, and mixed.
+- `dotnet bin/Debug/net8.0/CodeTracer.dll <cmd>` — SDK-only boxes; auto-switches to net472 for legacy.
+- `dotnet run -f net8.0 -- <cmd>` — quick dev (`dotnet run` requires the `-f`). `--help` lists all options.
 
 The default API is `http://localhost:11434` (native Ollama `/api/chat`). It also accepts
 the `.../v1` form — it gets normalized. For **LM Studio**, add `--api-style openai`
 (e.g. `-a http://localhost:1234 --api-style openai`).
+
+### Legacy / mixed (.NET Framework) solutions
+
+`MSBuildWorkspace` can host only **one** MSBuild family, fixed by the running process: the **net8.0**
+build gets the **.NET SDK MSBuild** (SDK-style projects only); the **net472** build gets the **full
+Visual Studio MSBuild** (loads **both** classic non-SDK / `packages.config` **and** modern SDK-style
+projects). A 15-year-old solution mixing .NET Framework and .NET (Core) therefore needs the net472 build.
+
+**You don't manage this.** CodeTracer reads the `.sln`, and if it finds a classic (non-SDK) project
+while running on .NET (Core), it **re-launches its net472 build** with the same arguments and prints
+`[auto] … switching to the .NET Framework build`. Needs VS / Build Tools on the machine. Set the
+`CODETRACER_NET472` env var to the `CodeTracer.exe` path if your layout is non-standard.
+
+**Reuse Visual Studio's packages — no feed, no `nuget.config` edits.** CodeTracer does *not* restore;
+it only reads restore output. So **build the solution once in VS** (it restores), then run CodeTracer
+with **`--offline`**: it resolves packages **only** from the local NuGet cache VS already filled and
+contacts **no** feed. Your `nuget.config` is left untouched.
+
+```bash
+.\codetracer.cmd map -s Big.sln --method "Foo.Bar" --offline
+```
+
+**Only if nothing is cached and you must hit the feed — connect Nexus / Artifactory / Azure DevOps.**
+The `dotnet`/`nuget` CLI does **not** share Visual Studio's stored credentials, so add them once
+(basic auth = username + API token), then restore:
+
+```bash
+# Nexus example (NuGet v3 hosted repo). Token: Nexus UI -> your profile -> "NuGet API Key".
+dotnet nuget add source "https://nexus.example.com/repository/nuget-hosted/index.json" \
+  -n NexusFeed -u <user> -p <nuget-api-token> --store-password-in-clear-text
+# Artifactory: URL like https://artifactory.example.com/artifactory/api/nuget/v3/<repo> ; token from "Set Me Up".
+
+nuget restore Big.sln      # nuget.exe for packages.config projects; `dotnet restore` for PackageReference
+```
+
+**→ Full walkthrough:** [`examples/legacy-framework-example.md`](examples/legacy-framework-example.md)
+— a mixed Framework + Core solution behind a private feed, end to end (the auto-switch to net472,
+`--offline` cache reuse, and the Nexus / Artifactory connect steps).
 
 ---
 
@@ -324,6 +383,8 @@ codetracer map -s CodeTracer.sln --method "LlmClient.ChatAsync" --up --out who-c
   **heavy**, `map` is deterministic by design — for a deep dive on any node, run `explain`/`trace` on it.
 - **`--depth N`** — how deep to follow (default: very deep); **`--max-nodes N`** is the real guard
   (default 400, and it says so on stderr when it caps — never a silent truncation).
+- **`--with-bodies`** (`--code`) — also append **every method's real source** under the diagram, in
+  the order reached (deterministic, no model). Add **`--peek N`** to cap each body to N lines.
 
 Each result is an **ASCII tree** (readable anywhere) **and** a **Mermaid graph** (renders as graphics
 on GitHub / VS Code). **→ Full example:** [`examples/map-full-example.md`](examples/map-full-example.md)
@@ -395,7 +456,7 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `-e, --endpoint` | trace | — | starting point B (route / `Class.Method`) |
 | `--from` / `--to` | trace | — | direct mode: path from `Class.Method` to `Class.Method` |
 | `--all-paths` / `--brute` | trace | off | enumerate ALL distinct paths, not just the first |
-| `--with-bodies` / `--code` | trace | off | insert each method's code (start → call to next hop) between steps; show param names + arg→param mapping |
+| `--with-bodies` / `--code` | trace+map | off | trace: insert each method's code (start → call to next hop) between steps; map: dump every method's real source under the diagram (deterministic) |
 | `--annotate` / `--why` | trace | off | short LLM "why" note per hop (depth-aware); implies `--with-bodies` |
 | `--no-llm` | trace+explain | off | trace: deterministic only; explain: dump Roslyn context, no model |
 | `--max-steps` | trace | `25` | agent step limit |
@@ -405,21 +466,31 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--up` / `--callers` | map | — | map only upstream (callers / impact); default with no flag = BOTH, as two files |
 | `--max-nodes` | map | `400` | hard cap on map size (said out loud when hit, never silent) |
 | `--repo-url` | trace+explain | — | render locations as clickable links to the repo |
-| `--peek` | explain | — | in the `--no-llm` dump, show first N lines per method instead of the full body |
+| `--peek` | explain+map | — | explain (`--no-llm` dump) / map (`--with-bodies`): show first N lines per method instead of the full body |
 | `-m, --model` | both | `gemma4:latest` | model name |
 | `-a, --api` | both | `http://localhost:11434` | server base URL |
 | `--api-style` | both | `ollama` | `ollama` \| `openai` (LM Studio) |
 | `--num-ctx` | both | `16384` | context window size |
 | `--num-predict` | both | `4096` | token cap for explain output |
 | `--temperature` | both | `0` / `0.2` | 0 for decisions, 0.2 for explain |
+| `--offline` / `--no-restore` | both | off | load using only the local NuGet cache (VS's restore); never contact a feed, `nuget.config` untouched |
 
 ---
 
 ## Common issues
 
-- **Solution won't load** → run `dotnet restore` + `dotnet build` on the *target* solution
-  first. `MSBuildWorkspace` must be able to open it. `[workspace] …` warnings during load are
-  normal (missing analyzers / NuGet advisories) — it continues.
+- **Solution won't load** → run restore on the *target* solution first (`dotnet restore`, or
+  `nuget restore` for `packages.config`). `MSBuildWorkspace` must be able to open it. `[workspace] …`
+  warnings during load are normal (missing analyzers / NuGet advisories) — it continues.
+- **`projects loaded:` is lower than expected / classic projects missing** → those are non-SDK .NET
+  Framework projects and you're on the net8.0 build. CodeTracer normally auto-switches to the net472
+  build; if it can't (no VS / Build Tools, or the net472 build isn't built), it says so — build it
+  with `dotnet build` and ensure Visual Studio or Build Tools for VS is installed. See
+  [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions).
+- **Restore fails: "cannot connect to NuGet" on a private feed** → VS has the credentials, the CLI
+  doesn't. Easiest: build once in VS, then run with **`--offline`** (reuses VS's cache, contacts no
+  feed). Otherwise add the feed credentials to `nuget.config` — see
+  [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions).
 - **`.slnx`** (the new SDK format) may not open in older Roslyn — use a classic `.sln`.
 - **`find_path` finds nothing** → interface & DI calls *are* followed automatically (Roslyn
   bridges interface members to implementations); a true miss means a **purely dynamic** link —
@@ -442,6 +513,8 @@ comments are in Slovak.)
 
 ```
 Program.cs       arg parsing, command dispatch (explain/trace), MSBuildLocator, wiring
+AutoRouter.cs    picks the runtime: re-launches the net472 build for classic/mixed solutions
+Compat/Shims.cs  net8.0 ↔ net472 compatibility helpers (BCL methods missing on .NET Framework)
 LlmClient.cs     HTTP client: Ollama /api/chat (structured outputs) + OpenAI-compatible
 RoslynIndex.cs   Roslyn analysis: symbols, call graph, find_path, BuildMethodContext (+deps)
 Agent.cs         trace: ReAct loop, token-level JSON, bootstrap + auto-escalation

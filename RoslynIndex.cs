@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
@@ -18,28 +19,120 @@ public class RoslynIndex
     private Solution _solution = null!;
     public string SolutionDir { get; private set; } = "";
 
-    public async Task LoadAsync(string solutionPath)
+    public async Task LoadAsync(string solutionPath, bool offline = false)
     {
         SolutionDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)) ?? "";
-        var workspace = MSBuildWorkspace.Create();
-        workspace.WorkspaceFailed += (_, e) =>
+        Console.Error.WriteLine($"[index] loading solution: {solutionPath}");
+
+        // Offline: reuse what Visual Studio already restored - resolve packages ONLY from the local
+        // caches, with NO remote source, so loading never contacts a (private/auth) feed.
+        ImmutableDictionary<string, string>? props = null;
+        if (offline)
         {
-            // Warnings during load are common (missing analyzers, etc.) - just log them.
+            var cfg = WriteOfflineNuGetConfig();
+            Console.Error.WriteLine($"[index] offline: reusing the local NuGet cache only, no feed (config: {cfg})");
+            props = ImmutableDictionary<string, string>.Empty.Add("RestoreConfigFile", cfg);
+        }
+
+        var workspace = CreateWorkspace(props);
+        try
+        {
+            _solution = await workspace.OpenSolutionAsync(solutionPath);
+        }
+        catch (Exception ex)
+        {
+            // OpenSolutionAsync is all-or-nothing: a single illegal edge (e.g. a circular project
+            // reference - VS allows it, Roslyn's immutable Solution model does not) drops the WHOLE
+            // solution. Fall back to rebuilding the graph from project infos, keeping every project
+            // and dropping ONLY the offending references.
+            Console.Error.WriteLine($"[index] whole-solution load failed: {FirstLine(ex.Message)}");
+            Console.Error.WriteLine("[index] rebuilding graph, dropping only the bad (cyclic/duplicate) project references...");
+            workspace.Dispose();
+            _solution = await LoadResilient(props, solutionPath);
+        }
+
+        var projCount = _solution.Projects.Count();
+        Console.Error.WriteLine($"[index] projects loaded: {projCount}");
+    }
+
+    private static MSBuildWorkspace CreateWorkspace(ImmutableDictionary<string, string>? props)
+    {
+        var ws = props != null ? MSBuildWorkspace.Create(props) : MSBuildWorkspace.Create();
+        ws.WorkspaceFailed += (_, e) =>
+        {
+            // Warnings during load are common (missing analyzers, package TFM mismatches, etc.) - log only.
             if (e.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
                 Console.Error.WriteLine($"[workspace] {e.Diagnostic.Message}");
         };
+        return ws;
+    }
 
-        Console.Error.WriteLine($"[index] loading solution: {solutionPath}");
-        _solution = await workspace.OpenSolutionAsync(solutionPath);
-        var projCount = _solution.Projects.Count();
-        Console.Error.WriteLine($"[index] projects loaded: {projCount}");
+    /// Resilient load: evaluate every project, then re-assemble the Solution graph by hand, skipping
+    /// any project reference that Roslyn rejects (a cycle / duplicate). Every project still loads, so
+    /// callers/callees analysis works across the whole solution except the few dropped edges.
+    private async Task<Solution> LoadResilient(ImmutableDictionary<string, string>? props, string solutionPath)
+    {
+        var workspace = CreateWorkspace(props);
+        var loader = props != null ? new MSBuildProjectLoader(workspace, props) : new MSBuildProjectLoader(workspace);
+        var info = await loader.LoadSolutionInfoAsync(solutionPath);
+
+        var sol = workspace.CurrentSolution;
+        foreach (var pi in info.Projects)                               // add projects WITHOUT refs first
+            sol = sol.AddProject(pi.WithProjectReferences(Array.Empty<ProjectReference>()));
+
+        int dropped = 0;
+        foreach (var pi in info.Projects)                               // then add refs, skipping bad ones
+            foreach (var pref in pi.ProjectReferences)
+            {
+                try { sol = sol.AddProjectReference(pi.Id, pref); }
+                catch { dropped++; }                                    // cyclic/duplicate -> keep both projects, drop the edge
+            }
+        if (dropped > 0)
+            Console.Error.WriteLine($"[index] dropped {dropped} cyclic/duplicate project reference(s) - analysis works across the rest.");
+        return sol;
+    }
+
+    private static string FirstLine(string s)
+    {
+        var i = s.IndexOfAny(new[] { '\r', '\n' });
+        return i < 0 ? s : s.Substring(0, i);
+    }
+
+    /// Writes a throwaway nuget.config that resolves packages ONLY from the machine's existing caches
+    /// (the global packages folder Visual Studio already populated) with NO remote source - so loading
+    /// a solution never contacts a private/auth feed. The user's real nuget.config is left untouched.
+    private static string WriteOfflineNuGetConfig()
+    {
+        var globalPackages = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+        if (string.IsNullOrWhiteSpace(globalPackages))
+            globalPackages = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages");
+
+        // <packageSources><clear/></packageSources> = no feeds at all; fallbackPackageFolders points at
+        // the cache VS filled, so PackageReference resolves fully offline. (packages.config projects
+        // resolve via their <HintPath> into the solution's packages/ folder - also offline.)
+        var xml =
+$@"<?xml version=""1.0"" encoding=""utf-8""?>
+<configuration>
+  <packageSources>
+    <clear />
+  </packageSources>
+  <fallbackPackageFolders>
+    <clear />
+    <add key=""vs-global-cache"" value=""{globalPackages}"" />
+  </fallbackPackageFolders>
+</configuration>";
+
+        var path = Path.Combine(Path.GetTempPath(), "codetracer-offline.nuget.config");
+        File.WriteAllText(path, xml);
+        return path;
     }
 
     private string Rel(Location loc)
     {
         var span = loc.GetLineSpan();
         var path = span.Path;
-        try { path = Path.GetRelativePath(SolutionDir, path); } catch { /* keep absolute */ }
+        try { path = Compat.GetRelativePath(SolutionDir, path); } catch { /* keep absolute */ }
         return $"{path}:{span.StartLinePosition.Line + 1}";
     }
 
@@ -261,9 +354,9 @@ public class RoslynIndex
             var lines = File.ReadAllLines(doc.FilePath);
             for (int i = 0; i < lines.Length; i++)
             {
-                if (lines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                if (lines[i].IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    var rel = Path.GetRelativePath(SolutionDir, doc.FilePath);
+                    var rel = Compat.GetRelativePath(SolutionDir, doc.FilePath);
                     sb.AppendLine($"{rel}:{i + 1}:  {lines[i].Trim()}");
                     if (++n >= 40) { sb.AppendLine("... (truncated)"); return sb.ToString(); }
                 }
@@ -841,9 +934,9 @@ public class RoslynIndex
     /// (down=false) breadth-first up to `maxDepth`, hard-capped at `maxNodes`. Deterministic (no model).
     /// `down` decides edge direction so the tree always reads top→bottom in calling order. Returns null
     /// if the root can't be resolved; the out `truncated` flag reports whether the node cap was hit.
-    public async Task<(Diagram.Graph graph, bool truncated)?> BuildMap(
+    public async Task<(Diagram.Graph graph, bool truncated, List<(string display, string where, string code)> bodies)?> BuildMap(
         string? className, string? methodName, string? filePath, int line,
-        bool down, int maxDepth, int maxNodes)
+        bool down, int maxDepth, int maxNodes, bool withBodies = false, int peek = 0)
     {
         var root = className != null
             ? await ResolveMethod(className, methodName!)
@@ -865,6 +958,7 @@ public class RoslynIndex
         // down: root is where you START (◆); up: root is what everything REACHES (★ target at the bottom).
         g.Add(Display(root), Display(root), Where(root), down ? "entry" : "target");
 
+        var nodeSyms = new List<IMethodSymbol> { root };   // unique methods in BFS order (for --with-bodies)
         bool truncated = false;
         while (queue.Count > 0 && !truncated)
         {
@@ -879,6 +973,7 @@ public class RoslynIndex
                 g.Add(Display(nb), Display(nb), Where(nb));
                 g.Edge(from, to);
                 if (!visited.Add(nb)) continue;                 // already mapped (cycle / shared callee)
+                nodeSyms.Add(nb);
                 if (g.Nodes.Count >= maxNodes) { truncated = true; break; }
                 queue.Enqueue((nb, lvl + 1));
             }
@@ -886,7 +981,26 @@ public class RoslynIndex
         if (truncated)
             Console.Error.WriteLine($"[map] hit the {maxNodes}-node cap - graph truncated here. " +
                                     "Raise --max-nodes (or lower --depth) for a different cut.");
-        return (g, truncated);
+
+        // --with-bodies: pull each unique method's real source (deterministic), peek-limited if asked.
+        var bodies = new List<(string display, string where, string code)>();
+        if (withBodies)
+            foreach (var m in nodeSyms)
+            {
+                var gb = await GetBody(m);
+                var code = gb?.node.ToString() ?? "// (no source available)";
+                if (peek > 0) code = PeekLines(code, peek);
+                bodies.Add((Display(m), Where(m), code));
+            }
+        return (g, truncated, bodies);
+    }
+
+    /// First N lines of a code block, with a note when clipped (used by map --with-bodies --peek).
+    private static string PeekLines(string code, int n)
+    {
+        var lines = code.Replace("\r\n", "\n").Split('\n');
+        if (lines.Length <= n) return code;
+        return string.Join("\n", lines.Take(n)) + $"\n// … (+{lines.Length - n} more lines — raise --peek)";
     }
 
     private async Task<MethodContext?> BuildMethodContextFor(IMethodSymbol m, int depth = 0)

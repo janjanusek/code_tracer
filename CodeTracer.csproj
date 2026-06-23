@@ -2,13 +2,22 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <!-- Target net8.0: builds on an SDK 8 (the VDI) and an SDK 10 (here). RollForward=Major
-         lets the net8 binary run on a newer runtime too (only .NET 10 is installed here). -->
-    <TargetFramework>net8.0</TargetFramework>
-    <RollForward>Major</RollForward>
+    <!-- Multi-target:
+         - net8.0  : builds on an SDK 8 (the VDI) and an SDK 10 (here); used for SDK-style /
+                     .NET (Core) target solutions. RollForward=Major lets it run on a newer runtime.
+         - net472  : so MSBuildLocator registers the FULL Visual Studio MSBuild (a .NET-Core host
+                     only gets the SDK MSBuild, which cannot evaluate classic non-SDK .NET Framework
+                     / packages.config projects). Run `-f net472` to analyze a legacy or mixed
+                     (15-year-old Framework + Core) solution; `-f net8.0` for pure SDK-style ones. -->
+    <TargetFrameworks>net8.0;net472</TargetFrameworks>
+    <RollForward Condition="'$(TargetFramework)' == 'net8.0'">Major</RollForward>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <!-- Roslyn on .NET Framework drags in many transitive assemblies (System.Memory,
+         Immutable, ...) - the auto-generated app.config binding redirects keep them bound. -->
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
   </PropertyGroup>
 
   <!-- samples/ contains standalone test projects (e.g. the DI playground) with their own
@@ -23,6 +32,19 @@
     <PackageReference Include="Microsoft.Build.Locator" Version="1.7.8" />
     <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="4.9.2" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.9.2" />
+    <!-- Source-only polyfills (Index, Range, init, required, nullable attrs) so the same C#
+         compiles on net472. No-ops on net8.0 where the types already ship. -->
+    <PackageReference Include="PolySharp" Version="1.14.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- net472-only: reference assemblies (so it builds without the Framework targeting pack
+       installed) and System.Text.Json (not in the .NET Framework BCL). net8.0 has both built in. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
 </Project>

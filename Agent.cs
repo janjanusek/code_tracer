@@ -355,7 +355,7 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         {
             try
             {
-                await File.WriteAllTextAsync(_outPath!, output + "\n");
+                await Compat.WriteAllTextAsync(_outPath!, output + "\n");
                 Console.Error.WriteLine($"[trace] saved to {_outPath}");
             }
             catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
