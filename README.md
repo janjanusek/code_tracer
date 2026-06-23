@@ -75,9 +75,11 @@ dotnet build                                        # builds BOTH net8.0 and net
 ```
 
 `codetracer` (`.cmd` for Windows, `.ps1` cross-platform) is a thin launcher so you **never pass
-`--framework`**: it runs the net8.0 build, which **auto-switches** to the net472 build for classic /
-.NET Framework / mixed solutions (see [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions)).
-(`dotnet run` can't choose a framework on a multi-target project — that's why the launcher exists.)
+`--framework`**: it does a fast incremental **build** (so it's always fresh after a `git pull` — no
+separate `dotnet build` needed) and runs the net8.0 build, which **auto-switches** to the net472 build
+for classic / .NET Framework / mixed solutions (see [Legacy / mixed
+solutions](#legacy--mixed-net-framework-solutions)). (`dotnet run` can't choose a framework on a
+multi-target project — that's why the launcher exists.)
 
 > The `[cfg]` / `[index]` / `[map]` lines are progress on **stderr**; Windows PowerShell colours them
 > red — that's normal, not an error (the exit code is `0` on success).
