@@ -80,9 +80,25 @@ public static class Diagram
         sb.AppendLine("## Call-flow");
         sb.AppendLine($"_{caption} — {origin}._");
         sb.AppendLine();
-        sb.AppendLine("```text");
-        sb.AppendLine(Ascii(g, fullAscii).TrimEnd());
-        sb.AppendLine("```");
+        // map's full tree can be long: wrap it in a foldable <details> (open) so it collapses like an
+        // IDE node on GitHub / VS Code, while staying plain-readable as text. trace/explain inline it.
+        if (fullAscii)
+        {
+            sb.AppendLine("<details open>");
+            sb.AppendLine("<summary>ASCII call tree — click to fold</summary>");
+            sb.AppendLine();
+            sb.AppendLine("```text");
+            sb.AppendLine(Ascii(g, fullAscii).TrimEnd());
+            sb.AppendLine("```");
+            sb.AppendLine();
+            sb.AppendLine("</details>");
+        }
+        else
+        {
+            sb.AppendLine("```text");
+            sb.AppendLine(Ascii(g, fullAscii).TrimEnd());
+            sb.AppendLine("```");
+        }
         sb.AppendLine();
         sb.AppendLine(Mermaid(g));
         return sb.ToString().TrimEnd();
@@ -303,7 +319,7 @@ public static class Diagram
         var sig = dash > 0 ? callee[..dash] : callee;
         var paren = sig.IndexOf('(');
         var name = (paren > 0 ? sig[..paren] : sig).Trim();
-        return name.Contains('.') ? name : null;
+        return name.IndexOf('.') >= 0 ? name : null;
     }
 
     /// "...  - Type (Audit.cs:8)" -> "Audit.cs:8"
