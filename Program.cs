@@ -2,11 +2,31 @@ using System.Diagnostics;
 using CodeTracer;
 using Microsoft.Build.Locator;
 
+// Auto-route FIRST (before any MSBuild type loads): if we're on .NET (Core) but the target
+// solution has classic non-SDK projects, re-exec the net472 build (full VS MSBuild) and return
+// its exit code. Painless: the user runs one command and we pick the runtime that can load it.
+if (AutoRouter.Route(args) is int routedExitCode)
+    return routedExitCode;
+
 // IMPORTANT: MSBuildLocator must be registered before we touch
 // any Roslyn/MSBuild type. That is why all the work is in Run*() methods,
 // not inline here — so the JIT does not load those types prematurely.
 if (!MSBuildLocator.IsRegistered)
-    MSBuildLocator.RegisterDefaults();
+{
+    try { MSBuildLocator.RegisterDefaults(); }
+    catch (Exception ex)
+    {
+        var onFramework = System.Runtime.InteropServices.RuntimeInformation
+            .FrameworkDescription.StartsWith(".NET Framework", StringComparison.OrdinalIgnoreCase);
+        Console.Error.WriteLine($"[fatal] no MSBuild could be located: {ex.Message}");
+        Console.Error.WriteLine(onFramework
+            ? "        This is the .NET Framework build - it needs the full MSBuild from Visual Studio\n" +
+              "        or 'Build Tools for Visual Studio'. Install one, or run the .NET (net8.0) build\n" +
+              "        for SDK-style solutions."
+            : "        Install the .NET SDK (it ships the SDK MSBuild).");
+        return 2;
+    }
+}
 
 return await RunApp(args);
 
@@ -39,7 +59,7 @@ static async Task<int> RunTrace(Options opts)
 
     var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
-    if (!await TryLoad(index, opts.Solution!)) return 1;
+    if (!await TryLoad(index, opts.Solution!, opts.Offline)) return 1;
 
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
@@ -88,7 +108,7 @@ static string AutoOutPath(string kind, string? label)
 static bool TrySplit(string classDotMethod, out string cls, out string method)
 {
     cls = method = "";
-    var parts = classDotMethod.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var parts = classDotMethod.SplitClean('.');
     if (parts.Length < 2) return false;
     method = parts[^1];
     cls = parts[^2];
@@ -108,7 +128,7 @@ static async Task<int> RunExplain(Options opts)
 
     var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
-    if (!await TryLoad(index, opts.Solution!)) return 1;
+    if (!await TryLoad(index, opts.Solution!, opts.Offline)) return 1;
 
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
@@ -117,7 +137,7 @@ static async Task<int> RunExplain(Options opts)
     string? cls = null, method = null;
     if (!string.IsNullOrWhiteSpace(opts.Method))
     {
-        var parts = opts.Method!.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var parts = opts.Method!.SplitClean('.');
         if (parts.Length < 2)
         {
             Console.Error.WriteLine("[error] --method expects the format \"Class.Method\".");
@@ -214,7 +234,7 @@ static async Task<int> RunExplain(Options opts)
 
     try
     {
-        await File.WriteAllTextAsync(outPath, text);
+        await Compat.WriteAllTextAsync(outPath, text);
         Console.Error.WriteLine(autoOut
             ? $"[explain] saved to {outPath}  (pass --out <file> to choose the path)"
             : $"[explain] saved to {outPath}");
@@ -237,7 +257,7 @@ static async Task<int> RunMap(Options opts)
     string? cls = null, method = null;
     if (!string.IsNullOrWhiteSpace(opts.Method))
     {
-        var parts = opts.Method!.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var parts = opts.Method!.SplitClean('.');
         if (parts.Length < 2)
         {
             Console.Error.WriteLine("[error] --method expects the format \"Class.Method\".");
@@ -263,7 +283,7 @@ static async Task<int> RunMap(Options opts)
 
     var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
-    if (!await TryLoad(index, opts.Solution!)) return 1;
+    if (!await TryLoad(index, opts.Solution!, opts.Offline)) return 1;
 
     var label = cls != null ? $"{cls}.{method}" : $"{Path.GetFileNameWithoutExtension(opts.File)}-L{opts.Line}";
     var written = new List<string>();
@@ -289,7 +309,7 @@ static async Task<int> RunMap(Options opts)
             : AutoOutPath(down ? "map-down" : "map-up", label);
         try
         {
-            await File.WriteAllTextAsync(outPath, text);
+            await Compat.WriteAllTextAsync(outPath, text);
             written.Add(outPath);
             Console.Error.WriteLine($"[map] saved {(down ? "downstream" : "upstream")} map to {outPath}");
         }
@@ -334,14 +354,15 @@ static string RenderMapDoc(Diagram.Graph graph, bool down, int depth, bool trunc
 
 // ---- shared helpers ----------------------------------------------------------
 
-static async Task<bool> TryLoad(RoslynIndex index, string solution)
+static async Task<bool> TryLoad(RoslynIndex index, string solution, bool offline)
 {
-    try { await index.LoadAsync(solution); return true; }
+    try { await index.LoadAsync(solution, offline); return true; }
     catch (Exception ex)
     {
         Console.Error.WriteLine($"[error] failed to load solution: {ex.Message}");
-        Console.Error.WriteLine("Tip: run 'dotnet restore' and 'dotnet build' on the target solution first, " +
-                                "so MSBuild can open it.");
+        Console.Error.WriteLine("Tip: build the solution in Visual Studio first (so packages are restored), then " +
+                                "re-run with --offline to reuse VS's NuGet cache without contacting any feed. " +
+                                "Or run 'dotnet restore' / 'nuget restore' on the target solution.");
         return false;
     }
 }
@@ -418,6 +439,7 @@ static Options ParseArgs(string[] args)
             case "--with-code":               o.ShowCode = true; break;
             case "--no-collapse":             o.Collapse = false; break;
             case "--no-llm":                  o.UseLlm = false; break;
+            case "--offline": case "--no-restore": case "--from-cache":  o.Offline = true; break;
             case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
             case "--with-bodies": case "--code":  o.WithBodies = true; break;
             case "--annotate": case "--why":      o.Annotate = true; break;
@@ -427,7 +449,7 @@ static Options ParseArgs(string[] args)
                                                   ? ApiStyle.OpenAI : ApiStyle.Ollama; break;
             case "--num-ctx":                 if (int.TryParse(Next(), out var nc)) o.NumCtx = nc; break;
             case "--num-predict":             if (int.TryParse(Next(), out var npr)) o.NumPredict = npr; break;
-            case "--temperature":             if (double.TryParse(Next(), System.Globalization.CultureInfo.InvariantCulture, out var t)) o.Temperature = t; break;
+            case "--temperature":             if (double.TryParse(Next(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var t)) o.Temperature = t; break;
             case "--max-steps":               if (int.TryParse(Next(), out var ms)) o.MaxSteps = ms; break;
             case "--summary":                 o.Summary = true; break;
             case "-h": case "--help":         PrintHelp(); Environment.Exit(0); break;
@@ -511,6 +533,10 @@ MAP options:    (deterministic overview - which methods a point reaches; no mode
       --out           single direction only: save to this path (both directions always auto-name)
 
 SHARED options:
+      --offline       (--no-restore / --from-cache) load the solution using ONLY the local NuGet
+                      cache (what Visual Studio already restored) - no feed is contacted, your
+                      nuget.config is untouched. Build once in VS, then run with --offline. Needed
+                      when packages come from a private feed whose credentials only VS has.
   -m, --model         model name (default: gemma4:latest)
   -a, --api           server base URL (default: http://localhost:11434)
                       LM Studio: http://localhost:1234  (add --api-style openai)
@@ -585,6 +611,8 @@ class Options
     public bool Collapse = true;   // --no-collapse: don't wrap each method's source in a <details> (fold-able) block
 
     // shared
+    public bool Offline = false;   // --offline/--no-restore/--from-cache: load using only the local
+                                   // NuGet cache (what VS already restored); never contact a feed
     public string Model = "gemma4:latest";
     public string Api = "http://localhost:11434";
     public ApiStyle ApiStyle = ApiStyle.Ollama;

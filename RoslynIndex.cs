@@ -18,10 +18,25 @@ public class RoslynIndex
     private Solution _solution = null!;
     public string SolutionDir { get; private set; } = "";
 
-    public async Task LoadAsync(string solutionPath)
+    public async Task LoadAsync(string solutionPath, bool offline = false)
     {
         SolutionDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)) ?? "";
-        var workspace = MSBuildWorkspace.Create();
+
+        MSBuildWorkspace workspace;
+        if (offline)
+        {
+            // Reuse what Visual Studio already restored: resolve packages ONLY from the local caches,
+            // with NO remote source -> loading never contacts a (private/auth) feed. RestoreConfigFile
+            // is a global MSBuild property, so any restore/resolve during evaluation uses our config.
+            var cfg = WriteOfflineNuGetConfig();
+            Console.Error.WriteLine($"[index] offline: reusing the local NuGet cache only, no feed (config: {cfg})");
+            workspace = MSBuildWorkspace.Create(new Dictionary<string, string> { ["RestoreConfigFile"] = cfg });
+        }
+        else
+        {
+            workspace = MSBuildWorkspace.Create();
+        }
+
         workspace.WorkspaceFailed += (_, e) =>
         {
             // Warnings during load are common (missing analyzers, etc.) - just log them.
@@ -35,11 +50,41 @@ public class RoslynIndex
         Console.Error.WriteLine($"[index] projects loaded: {projCount}");
     }
 
+    /// Writes a throwaway nuget.config that resolves packages ONLY from the machine's existing caches
+    /// (the global packages folder Visual Studio already populated) with NO remote source - so loading
+    /// a solution never contacts a private/auth feed. The user's real nuget.config is left untouched.
+    private static string WriteOfflineNuGetConfig()
+    {
+        var globalPackages = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+        if (string.IsNullOrWhiteSpace(globalPackages))
+            globalPackages = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages");
+
+        // <packageSources><clear/></packageSources> = no feeds at all; fallbackPackageFolders points at
+        // the cache VS filled, so PackageReference resolves fully offline. (packages.config projects
+        // resolve via their <HintPath> into the solution's packages/ folder - also offline.)
+        var xml =
+$@"<?xml version=""1.0"" encoding=""utf-8""?>
+<configuration>
+  <packageSources>
+    <clear />
+  </packageSources>
+  <fallbackPackageFolders>
+    <clear />
+    <add key=""vs-global-cache"" value=""{globalPackages}"" />
+  </fallbackPackageFolders>
+</configuration>";
+
+        var path = Path.Combine(Path.GetTempPath(), "codetracer-offline.nuget.config");
+        File.WriteAllText(path, xml);
+        return path;
+    }
+
     private string Rel(Location loc)
     {
         var span = loc.GetLineSpan();
         var path = span.Path;
-        try { path = Path.GetRelativePath(SolutionDir, path); } catch { /* keep absolute */ }
+        try { path = Compat.GetRelativePath(SolutionDir, path); } catch { /* keep absolute */ }
         return $"{path}:{span.StartLinePosition.Line + 1}";
     }
 
@@ -263,7 +308,7 @@ public class RoslynIndex
             {
                 if (lines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
                 {
-                    var rel = Path.GetRelativePath(SolutionDir, doc.FilePath);
+                    var rel = Compat.GetRelativePath(SolutionDir, doc.FilePath);
                     sb.AppendLine($"{rel}:{i + 1}:  {lines[i].Trim()}");
                     if (++n >= 40) { sb.AppendLine("... (truncated)"); return sb.ToString(); }
                 }
