@@ -342,7 +342,7 @@ static string RenderMapDoc(Diagram.Graph graph, bool down, int depth, bool trunc
 
     var section = Diagram.Section(graph, down
         ? $"Everything {rootLabel} reaches"
-        : $"Everything that reaches {rootLabel}");
+        : $"Everything that reaches {rootLabel}", fullAscii: true);   // map: never truncate the ASCII tree
     if (string.IsNullOrWhiteSpace(section))
         sb.AppendLine(down
             ? "_No in-solution callees — this method is a leaf (it calls only framework/external code)._"
