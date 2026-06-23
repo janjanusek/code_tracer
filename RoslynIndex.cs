@@ -306,7 +306,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             var lines = File.ReadAllLines(doc.FilePath);
             for (int i = 0; i < lines.Length; i++)
             {
-                if (lines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                if (lines[i].IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     var rel = Compat.GetRelativePath(SolutionDir, doc.FilePath);
                     sb.AppendLine($"{rel}:{i + 1}:  {lines[i].Trim()}");
