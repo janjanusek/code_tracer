@@ -11,13 +11,14 @@
 
 ## The situation
 
-A real legacy solution, grown over ~15 years:
+A real legacy solution, grown over ~15 years (hundreds of projects):
 
 ```
-BigShop.sln
-├─ BigShop.Web        classic non-SDK csproj, packages.config, <TargetFrameworkVersion>v4.7.1</…>
-├─ BigShop.Services   classic non-SDK csproj, packages.config, net471
-└─ BigShop.Core       modern SDK-style csproj, <TargetFramework>net8.0</TargetFramework>, PackageReference
+All.Monster.sln
+├─ …Web              classic non-SDK csproj, packages.config, <TargetFrameworkVersion>v4.7.1</…>
+├─ …Services         classic non-SDK csproj, packages.config, net472
+├─ …Provisioning.*   modern SDK-style csproj, net6.0, PackageReference
+└─ …Public.MyAccount  ⇄  …Public.MyAccount.Data   (a circular project reference)
 ```
 
 - NuGet packages come from a **private feed** (Artifactory / Nexus / Azure DevOps). The credentials
@@ -27,92 +28,104 @@ BigShop.sln
 
 **Why the terminal "won't build" while VS does:** Roslyn's `MSBuildWorkspace` hosts exactly one
 MSBuild, fixed by the process runtime. The **net8.0** CodeTracer build gets the **.NET SDK MSBuild**,
-which **cannot evaluate classic non-SDK projects** — so `BigShop.Web` / `BigShop.Services` silently
+which **cannot evaluate classic non-SDK projects** — so the `…Web` / `…Services` projects silently
 drop out. The **net472** build gets the **full Visual Studio MSBuild**, which loads **both** the
 classic *and* the modern projects. CodeTracer picks the right one for you.
 
 ---
 
-## Step 1 — build CodeTracer once (produces both runtimes)
-
-```bash
-dotnet build
-#   -> bin\Debug\net8.0\CodeTracer.dll   (SDK MSBuild — modern solutions)
-#   -> bin\Debug\net472\CodeTracer.exe   (full VS MSBuild — classic / mixed solutions)
-```
-
-Nothing extra to install to *build* net472 — the .NET Framework reference assemblies come via NuGet.
-To *run* net472 against a real Framework solution you need VS / Build Tools on the machine (you have it).
-
-## Step 2 — restore the target the painless way: let Visual Studio do it
+## Step 1 — restore the target the painless way: let Visual Studio do it
 
 CodeTracer **never restores** packages itself — it only *reads* restore output. So restore the way that
-already works on this box: **open `BigShop.sln` in Visual Studio and Build (or Rebuild) it once.** VS
+already works on this box: **open `All.Monster.sln` in Visual Studio and Build (or Rebuild) it once.** VS
 authenticates to the private feed with its stored credentials and fills the local NuGet caches:
 
-- PackageReference projects (`BigShop.Core`) → `%USERPROFILE%\.nuget\packages` + `obj\project.assets.json`
-- packages.config projects (`BigShop.Web`, `BigShop.Services`) → the solution's `packages\` folder
+- PackageReference / SDK-style projects → `%USERPROFILE%\.nuget\packages` + each project's `obj\project.assets.json`
+- packages.config (classic) projects → the solution's `packages\` folder
 
 You do **not** need to touch `nuget.config` or run a CLI restore.
 
-## Step 3 — run CodeTracer with `--offline` — it auto-routes **and** reuses the cache
+## Step 2 — run it with the launcher — one command, no framework flag
 
-Run the same one command you'd use for any solution. `--offline` tells CodeTracer to resolve packages
-**only** from the caches VS just filled and to contact **no** feed:
+`codetracer.cmd` builds CodeTracer for you (incrementally — fresh after every `git pull`) and runs it.
+`--offline` tells CodeTracer to resolve packages **only** from the caches VS just filled, contacting
+**no** feed. You pass **no** `--framework` — the launcher runs the net8.0 build, which **auto-switches**
+to the net472 build because this solution has classic projects:
 
-```bash
-# the launcher runs with NO framework flag and auto-switches to net472 for this legacy solution:
-.\codetracer map -s BigShop.sln --method "OrderService.PlaceOrder" --down --offline
-# equivalent without the launcher (one build that loads everything on a VS box):
-bin\Debug\net472\CodeTracer.exe map -s BigShop.sln --method "OrderService.PlaceOrder" --down --offline
+```powershell
+.\codetracer.cmd map -s "C:\dev\monster\src\All.Monster.sln" `
+  --method "OrderBuilder.CreateOrderFromCartAndSave" --up --offline
 ```
 
-Console (illustrative):
+> Don't use `dotnet run` here — on a multi-target project it errors asking for `--framework`. And don't
+> put a `--` after `codetracer.cmd` (habit from `dotnet run --`); it's not needed.
+
+Console (illustrative — close to a real run):
 
 ```text
+[codetracer] first run - building (net8.0 + net472)...        <- only the first time; fast afterwards
 [auto] classic (non-SDK) .NET Framework project(s) detected -> switching to the .NET Framework build for full MSBuild:
-       C:\tools\code_tracer\bin\Debug\net472\CodeTracer.exe
-[cfg] mode=map  directions=down  depth=64  max-nodes=400  (deterministic, no model)
-[index] offline: reusing the local NuGet cache only, no feed (config: C:\Users\you\AppData\Local\Temp\codetracer-offline.nuget.config)
-[index] loading solution: BigShop.sln
-[workspace] Msbuild ... skipping analyzer ...        <- these warnings are normal, load continues
-[index] projects loaded: 3                            <- all three, incl. the two classic net471 projects
-[map] building downstream (callees) map ...
-[map] wrote codetracer-map-down-OrderService.PlaceOrder.md
+       C:\Users\you\source\repos\code_tracer\bin\Debug\net472\CodeTracer.exe
+[cfg] mode=map  directions=up  depth=64  max-nodes=400  (deterministic, no model)
+[index] offline: reusing the local NuGet cache only, no feed (config: ...\Temp\codetracer-offline.nuget.config)
+[index] loading solution: C:\dev\monster\src\All.Monster.sln
+[workspace] Msbuild failed when processing the file '...CCI.Carrier.Provision.csproj' ... was restored
+            using '.NETFramework,Version=v4.6.1 … v4.8.1' instead of … 'net6.0'.   <- NORMAL warnings, load continues
+[index] whole-solution load failed: Adding project reference from '...MyAccount.csproj' to '...MyAccount.Data.csproj' will cause a circular reference.
+[index] rebuilding graph, dropping only the bad (cyclic/duplicate) project references...
+[index] dropped 2 cyclic/duplicate project reference(s) - analysis works across the rest.
+[index] projects loaded: 469
+[map] building upstream (callers) map ...
+[map] saved upstream map to codetracer-map-up-OrderBuilder.CreateOrderFromCartAndSave.md
 ```
 
 What those lines mean:
 
 | line | meaning |
 |---|---|
-| `[auto] … switching to the .NET Framework build` | you started the net8.0 build, it saw a classic project, and **re-launched the net472 build** for you — no `-f`, no version-hunting |
+| `[auto] … switching to the .NET Framework build` | you ran the launcher (net8.0); it saw a classic project and **re-launched the net472 build** for you — no `-f`, no version-hunting |
 | `[index] offline: reusing the local NuGet cache only` | `--offline` wrote a throwaway config (cleared sources + fallback to VS's cache); the private feed is **never** contacted, your `nuget.config` is untouched |
-| `[index] projects loaded: 3` | the classic **and** modern projects all loaded — the whole-solution call graph is available |
+| `[workspace] Msbuild failed … restored using .NETFramework v4.x instead of net6.0` | a **warning**, not an error — a package was restored for a different TFM; load continues |
+| `[index] whole-solution load failed: … circular reference` + `rebuilding graph` | `OpenSolutionAsync` is all-or-nothing; one illegal edge (a cycle VS tolerates but Roslyn doesn't) would drop the whole solution, so CodeTracer **rebuilds the graph and drops only the bad edges** |
+| `[index] projects loaded: 469` | the classic **and** modern projects all loaded — the whole-solution call graph is available |
 
-If you instead see `projects loaded: 1` (only the modern one), you're on the net8.0 build **without**
-the net472 build present, or VS / Build Tools isn't installed — see *Troubleshooting* below.
+If you instead see `projects loaded: 1` (only the modern one), the launcher didn't switch — the net472
+build isn't present or VS / Build Tools isn't installed — see *Troubleshooting* below.
 
-## Step 4 — use it normally
+## Step 3 — see the actual code, not just names
 
-From here every mode works across the mixed solution. A couple of legacy-friendly, **model-free**
-(deterministic, instant) commands:
+Add **`--with-bodies`** to dump every method's real source under the diagram (deterministic, no model).
+On a big map, cap each body with **`--peek`** so the file stays readable:
 
-```bash
-# Impact analysis on a classic net471 service: who (transitively) reaches this method?
-bin\Debug\net472\CodeTracer.exe map -s BigShop.sln --method "PricingRepository.Save" --up --offline
-
-# The whole call chain from an MVC endpoint down to a target class, all paths, no model:
-bin\Debug\net472\CodeTracer.exe trace -s BigShop.sln -f Pricing\PricingEngine.cs \
-  -e "OrdersController.Create" --all-paths --no-llm --offline
+```powershell
+.\codetracer.cmd map -s "C:\dev\monster\src\All.Monster.sln" `
+  --method "OrderBuilder.CreateOrderFromCartAndSave" --up --with-bodies --peek 20 --offline
 ```
 
-The result ends with the auto `## Call-flow` map (ASCII + Mermaid), e.g.:
+The saved `.md` then has: a **foldable, full ASCII tree** (never truncated for `map`) + a **Mermaid**
+graph + a **`## Method bodies`** section with the source of every method in the map.
+
+## Step 4 — the other modes
+
+Everything works across the mixed solution. A couple of legacy-friendly, **model-free** (deterministic,
+instant) commands:
+
+```powershell
+# Impact analysis on a classic net472 service: who (transitively) reaches this method?
+.\codetracer.cmd map -s "C:\dev\monster\src\All.Monster.sln" --method "PricingRepository.Save" --up --offline
+
+# The whole call chain from an MVC endpoint down to a target class, all paths, no model:
+.\codetracer.cmd trace -s "C:\dev\monster\src\All.Monster.sln" `
+  -f "Pricing\PricingEngine.cs" -e "OrdersController.Create" --all-paths --no-llm --offline
+```
+
+A `trace` result ends with the auto `## Call-flow` map (ASCII + Mermaid), e.g.:
 
 ```text
-OrdersController.Create   ◆ start        BigShop.Web\Controllers\OrdersController.cs:42
-└─► OrderService.PlaceOrder              BigShop.Services\OrderService.cs:88
-    ├─► PricingEngine.Quote   ★ target   BigShop.Services\Pricing\PricingEngine.cs:15
-    └─► PricingRepository.Save           BigShop.Services\Data\PricingRepository.cs:120
+OrdersController.Create   ◆ start        ...\Web\Controllers\OrdersController.cs:42
+└─► OrderService.PlaceOrder              ...\Services\OrderService.cs:88
+    ├─► PricingEngine.Quote   ★ target   ...\Services\Pricing\PricingEngine.cs:15
+    └─► PricingRepository.Save           ...\Services\Data\PricingRepository.cs:120
 ```
 
 ---
@@ -122,17 +135,17 @@ OrdersController.Create   ◆ start        BigShop.Web\Controllers\OrdersControl
 Only needed when VS hasn't restored (fresh clone, cleared cache). The CLI doesn't share VS's stored
 credentials, so add them once (basic auth = username + API token), then restore:
 
-```bash
+```powershell
 # Nexus (NuGet v3 hosted repo). Token: Nexus UI -> your profile -> "NuGet API Key".
-dotnet nuget add source "https://nexus.example.com/repository/nuget-hosted/index.json" \
+dotnet nuget add source "https://nexus.example.com/repository/nuget-hosted/index.json" `
   -n NexusFeed -u <user> -p <nuget-api-token> --store-password-in-clear-text
 
 # Artifactory: source URL https://artifactory.example.com/artifactory/api/nuget/v3/<repo>
 #   token from the repo's "Set Me Up" -> NuGet panel.
 
-# Azure DevOps Artifacts: dotnet restore BigShop.sln --interactive   (Azure Artifacts Credential Provider)
+# Azure DevOps Artifacts: dotnet restore All.Monster.sln --interactive   (Azure Artifacts Credential Provider)
 
-nuget restore BigShop.sln     # nuget.exe for packages.config projects; `dotnet restore` for PackageReference
+nuget restore All.Monster.sln     # nuget.exe for packages.config projects; `dotnet restore` for PackageReference
 ```
 
 Then drop `--offline` (or keep it — once restored, offline still works and is faster).
@@ -143,9 +156,12 @@ Then drop `--offline` (or keep it — once restored, offline still works and is 
 
 | symptom | cause | fix |
 |---|---|---|
-| `projects loaded:` lower than expected; classic projects missing | on the net8.0 build, no auto-route happened | ensure `bin\Debug\net472\CodeTracer.exe` exists (`dotnet build`) **and** VS / Build Tools for VS is installed; CodeTracer then switches automatically |
+| `projects loaded:` lower than expected; classic projects missing | the launcher didn't switch to net472 | ensure VS / Build Tools for VS is installed and `bin\Debug\net472\CodeTracer.exe` exists (the launcher builds it) |
+| `Path to file of class A …` prompt for a `map` command | a stray `--` after `.\codetracer.cmd` became the command and fell back to `trace` | drop the `--` (recent builds ignore it anyway): `.\codetracer.cmd map …` |
 | `[fatal] no MSBuild could be located` (net472 build) | no full MSBuild on the machine | install Visual Studio or *Build Tools for Visual Studio* |
 | restore / load tries to reach the feed and fails on auth | not using the cache | build once in VS, then run with **`--offline`** |
+| `Your project targets multiple frameworks … --framework` | you ran `dotnet run` instead of the launcher | use `.\codetracer.cmd …` (or `dotnet run -f net8.0 -- …`) |
+| `[index] whole-solution load failed … circular reference` | a project-reference cycle VS tolerates but Roslyn doesn't | nothing to do — CodeTracer rebuilds the graph and drops only the bad edges (`dropped N …`), then continues |
 | `[auto]` can't find the net472 exe (non-standard layout) | sibling path not discoverable | set `CODETRACER_NET472=<path>\CodeTracer.exe` |
 | `.slnx` solution won't open | new XML solution format, older Roslyn | use a classic `.sln` |
 

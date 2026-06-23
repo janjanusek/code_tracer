@@ -70,7 +70,7 @@ docker compose up -d
 
 ```bash
 dotnet build                                        # builds BOTH net8.0 and net472
-.\codetracer map -s Big.sln --method "Foo.Bar"      # run with NO framework flag (Windows .cmd)
+.\codetracer.cmd map -s Big.sln --method "Foo.Bar"  # run with NO framework flag (Windows)
 ./codetracer.ps1 map -s Big.sln --method "Foo.Bar"  # PowerShell / Linux / macOS
 ```
 
@@ -111,7 +111,7 @@ with **`--offline`**: it resolves packages **only** from the local NuGet cache V
 contacts **no** feed. Your `nuget.config` is left untouched.
 
 ```bash
-bin\Debug\net472\CodeTracer.exe map -s Big.sln --method "Foo.Bar" --offline
+.\codetracer.cmd map -s Big.sln --method "Foo.Bar" --offline
 ```
 
 **Only if nothing is cached and you must hit the feed — connect Nexus / Artifactory / Azure DevOps.**
