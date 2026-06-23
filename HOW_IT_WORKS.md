@@ -40,6 +40,8 @@ Roslyn result. That's the whole architecture in one sentence.
 | file | responsibility |
 |---|---|
 | `Program.cs` | parse args, pick the command (`explain`/`trace`), load the solution, wire things up |
+| `AutoRouter.cs` | before any MSBuild loads: detect classic/mixed solutions and re-launch the net472 build |
+| `Compat/Shims.cs` | net8.0 ↔ net472 source compatibility (BCL methods missing on .NET Framework) |
 | `RoslynIndex.cs` | all Roslyn analysis: symbols, callers, callees, `find_path`, `BuildMethodContext` |
 | `LlmClient.cs` | HTTP to Ollama `/api/chat` (structured outputs) or an OpenAI-compatible server |
 | `Agent.cs` | trace mode: deterministic pre-flight, the model loop, JSON enforcement, escalation |
@@ -47,7 +49,11 @@ Roslyn result. That's the whole architecture in one sentence.
 | `Diagram.cs` | the `## Call-flow` diagram (ASCII + Mermaid) of what the analysis found — deterministic |
 
 Startup detail: `MSBuildLocator.RegisterDefaults()` must run **before** any Roslyn/MSBuild
-type is touched, so all real work lives in methods, not inline in `Program.cs`.
+type is touched, so all real work lives in methods, not inline in `Program.cs`. Even earlier,
+`AutoRouter.Route()` runs first (it touches no MSBuild type): on the .NET (Core) build it inspects
+the `.sln`, and if any project is classic (non-SDK) it re-execs the **net472** build — whose
+`RegisterDefaults()` then picks the **full Visual Studio MSBuild** that can load Framework projects.
+The net8.0 build's SDK MSBuild can't, which is the whole reason for the two targets.
 
 ---
 

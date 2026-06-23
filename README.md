@@ -39,11 +39,17 @@ It has **three modes**:
 
 ## Requirements
 
-1. **.NET 8 SDK or newer** — `dotnet --version`. The project targets **`net8.0`**, so it builds
-   on a .NET 8 SDK (e.g. a VDI) *and* a .NET 10 SDK. `RollForward=Major` lets the net8 binary
-   run on a newer runtime if no .NET 8 runtime is installed.
-2. **Ollama ≥ 0.5** (structured outputs) — `ollama --version`
-3. Model: `ollama pull gemma4:latest`
+1. **.NET 8 SDK or newer** — `dotnet --version`. CodeTracer multi-targets **`net8.0;net472`**, so
+   `dotnet build` produces **both** builds: **net8.0** for SDK-style / modern .NET solutions (runs on
+   a .NET 8 SDK — e.g. a VDI — *and* a .NET 10 SDK; `RollForward=Major`), and **net472** for **classic
+   .NET Framework / mixed** solutions. Building net472 needs nothing extra (reference assemblies come
+   via NuGet).
+2. **To analyze classic .NET Framework or mixed (Framework + Core) solutions** you also need the
+   **full MSBuild** — **Visual Studio** or **Build Tools for Visual Studio** installed. You don't pick
+   a framework: CodeTracer **auto-detects** the solution type and uses (or switches to) the right build
+   — see [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions).
+3. **Ollama ≥ 0.5** (structured outputs) — `ollama --version`
+4. Model: `ollama pull gemma4:latest`
 
 On a CPU-only machine with 32 GB RAM, a `--num-ctx` of 8–16K is safe; higher risks OOM.
 Smaller / more quantized models (e.g. a Q4 build) run faster but may fill the trace schema
@@ -63,14 +69,65 @@ docker compose up -d
 ## Build & run
 
 ```bash
-dotnet build
-dotnet run -- <command> [options]      # command = explain | trace
-dotnet run -- --help
+dotnet build                              # builds BOTH net8.0 and net472
 ```
+
+Then run **the built executable** — it auto-selects the right MSBuild for whatever solution you point
+it at, so you never choose a framework:
+
+```bash
+# Windows with Visual Studio / Build Tools — handles legacy, modern, AND mixed solutions:
+bin\Debug\net472\CodeTracer.exe <command> [options]
+
+# A box with only the .NET SDK (no VS — Linux/CI, or a VDI): use the net8.0 build. If it meets a
+# classic non-SDK project it re-launches the net472 build automatically.
+dotnet bin/Debug/net8.0/CodeTracer.dll <command> [options]
+```
+
+`dotnet run` also works for quick dev, but because the project multi-targets you must say which
+framework: `dotnet run -f net8.0 -- <command>` (or `-f net472`). `--help` lists all options.
 
 The default API is `http://localhost:11434` (native Ollama `/api/chat`). It also accepts
 the `.../v1` form — it gets normalized. For **LM Studio**, add `--api-style openai`
 (e.g. `-a http://localhost:1234 --api-style openai`).
+
+### Legacy / mixed (.NET Framework) solutions
+
+`MSBuildWorkspace` can host only **one** MSBuild family, fixed by the running process: the **net8.0**
+build gets the **.NET SDK MSBuild** (SDK-style projects only); the **net472** build gets the **full
+Visual Studio MSBuild** (loads **both** classic non-SDK / `packages.config` **and** modern SDK-style
+projects). A 15-year-old solution mixing .NET Framework and .NET (Core) therefore needs the net472 build.
+
+**You don't manage this.** CodeTracer reads the `.sln`, and if it finds a classic (non-SDK) project
+while running on .NET (Core), it **re-launches its net472 build** with the same arguments and prints
+`[auto] … switching to the .NET Framework build`. Needs VS / Build Tools on the machine. Set the
+`CODETRACER_NET472` env var to the `CodeTracer.exe` path if your layout is non-standard.
+
+**Reuse Visual Studio's packages — no feed, no `nuget.config` edits.** CodeTracer does *not* restore;
+it only reads restore output. So **build the solution once in VS** (it restores), then run CodeTracer
+with **`--offline`**: it resolves packages **only** from the local NuGet cache VS already filled and
+contacts **no** feed. Your `nuget.config` is left untouched.
+
+```bash
+bin\Debug\net472\CodeTracer.exe map -s Big.sln --method "Foo.Bar" --offline
+```
+
+**Only if nothing is cached and you must hit the feed — connect Nexus / Artifactory / Azure DevOps.**
+The `dotnet`/`nuget` CLI does **not** share Visual Studio's stored credentials, so add them once
+(basic auth = username + API token), then restore:
+
+```bash
+# Nexus example (NuGet v3 hosted repo). Token: Nexus UI -> your profile -> "NuGet API Key".
+dotnet nuget add source "https://nexus.example.com/repository/nuget-hosted/index.json" \
+  -n NexusFeed -u <user> -p <nuget-api-token> --store-password-in-clear-text
+# Artifactory: URL like https://artifactory.example.com/artifactory/api/nuget/v3/<repo> ; token from "Set Me Up".
+
+nuget restore Big.sln      # nuget.exe for packages.config projects; `dotnet restore` for PackageReference
+```
+
+**→ Full walkthrough:** [`examples/legacy-framework-example.md`](examples/legacy-framework-example.md)
+— a mixed Framework + Core solution behind a private feed, end to end (the auto-switch to net472,
+`--offline` cache reuse, and the Nexus / Artifactory connect steps).
 
 ---
 
@@ -412,14 +469,24 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--num-ctx` | both | `16384` | context window size |
 | `--num-predict` | both | `4096` | token cap for explain output |
 | `--temperature` | both | `0` / `0.2` | 0 for decisions, 0.2 for explain |
+| `--offline` / `--no-restore` | both | off | load using only the local NuGet cache (VS's restore); never contact a feed, `nuget.config` untouched |
 
 ---
 
 ## Common issues
 
-- **Solution won't load** → run `dotnet restore` + `dotnet build` on the *target* solution
-  first. `MSBuildWorkspace` must be able to open it. `[workspace] …` warnings during load are
-  normal (missing analyzers / NuGet advisories) — it continues.
+- **Solution won't load** → run restore on the *target* solution first (`dotnet restore`, or
+  `nuget restore` for `packages.config`). `MSBuildWorkspace` must be able to open it. `[workspace] …`
+  warnings during load are normal (missing analyzers / NuGet advisories) — it continues.
+- **`projects loaded:` is lower than expected / classic projects missing** → those are non-SDK .NET
+  Framework projects and you're on the net8.0 build. CodeTracer normally auto-switches to the net472
+  build; if it can't (no VS / Build Tools, or the net472 build isn't built), it says so — build it
+  with `dotnet build` and ensure Visual Studio or Build Tools for VS is installed. See
+  [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions).
+- **Restore fails: "cannot connect to NuGet" on a private feed** → VS has the credentials, the CLI
+  doesn't. Easiest: build once in VS, then run with **`--offline`** (reuses VS's cache, contacts no
+  feed). Otherwise add the feed credentials to `nuget.config` — see
+  [Legacy / mixed solutions](#legacy--mixed-net-framework-solutions).
 - **`.slnx`** (the new SDK format) may not open in older Roslyn — use a classic `.sln`.
 - **`find_path` finds nothing** → interface & DI calls *are* followed automatically (Roslyn
   bridges interface members to implementations); a true miss means a **purely dynamic** link —
@@ -442,6 +509,8 @@ comments are in Slovak.)
 
 ```
 Program.cs       arg parsing, command dispatch (explain/trace), MSBuildLocator, wiring
+AutoRouter.cs    picks the runtime: re-launches the net472 build for classic/mixed solutions
+Compat/Shims.cs  net8.0 ↔ net472 compatibility helpers (BCL methods missing on .NET Framework)
 LlmClient.cs     HTTP client: Ollama /api/chat (structured outputs) + OpenAI-compatible
 RoslynIndex.cs   Roslyn analysis: symbols, call graph, find_path, BuildMethodContext (+deps)
 Agent.cs         trace: ReAct loop, token-level JSON, bootstrap + auto-escalation
