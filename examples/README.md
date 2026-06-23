@@ -24,3 +24,10 @@ graphics on GitHub / VS Code). It's deterministic (no extra model call).
 
 Each example notes its real run-time and token usage. See [`../MANUAL.md`](../MANUAL.md) for the
 full reference.
+
+**Workflow walkthrough (not a generated dump):**
+[`legacy-framework-example.md`](legacy-framework-example.md) — how to run CodeTracer on an **old,
+15-year-old, mixed .NET Framework + .NET (Core)** solution behind a **private NuGet feed**: the
+automatic switch to the net472 build (full Visual Studio MSBuild), reusing Visual Studio's restore with
+**`--offline`** (no feed, no `nuget.config` edits), and connecting Nexus / Artifactory / Azure DevOps
+if you must. This is the "it builds in VS but won't load from the terminal" case.
