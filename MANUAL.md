@@ -431,6 +431,7 @@ A long deep run is **never lost**, even if you forget `--out`:
 | `--depth` | map | very deep | how far to expand the graph (the `explain` default of 1 does not apply to map) |
 | `--max-nodes` | map | `400` | hard cap on map size (announced when hit, never silent) |
 | `--no-llm` | both | off | trace: deterministic only · explain: dump Roslyn context, no model (map is always model-free) |
+| `--no-test` / `--skip-tests` | all | off | drop test code from the graph: `[Fact]`/`[Theory]`/`[Test]`/`[TestMethod]`/… members & types, `*Test(s)` types, members of `*Test(s)` assemblies/namespaces |
 | `--peek` | explain | — | in the `--no-llm` dump, first N lines per method instead of full body |
 | `--repo-url` | both | — | clickable links to the repo (`.../blob/<branch>`) |
 | `--out` | both | — | save the result to a file |

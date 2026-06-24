@@ -19,6 +19,60 @@ public class RoslynIndex
     private Solution _solution = null!;
     public string SolutionDir { get; private set; } = "";
 
+    /// --no-test: when true, test code (xUnit/NUnit/MSTest members & types, *Test(s) types, and members
+    /// of *Test(s) assemblies / namespaces) is dropped from every traversal - callees, callers, paths and
+    /// the reachability map - so the call-graph isn't drowned in test branches. See <see cref="IsTestSymbol"/>.
+    public bool ExcludeTests { get; set; }
+
+    // Test markers across the big three frameworks, matched by attribute class NAME (namespace-agnostic),
+    // so we don't need a reference to xunit/nunit/mstest to recognise them.
+    private static readonly HashSet<string> TestAttributeNames = new(StringComparer.Ordinal)
+    {
+        "FactAttribute", "TheoryAttribute",                                       // xUnit
+        "TestAttribute", "TestCaseAttribute", "TestCaseSourceAttribute",          // NUnit
+        "TestFixtureAttribute", "SetUpAttribute", "TearDownAttribute",
+        "OneTimeSetUpAttribute", "OneTimeTearDownAttribute",
+        "TestMethodAttribute", "DataTestMethodAttribute", "TestClassAttribute",    // MSTest
+        "TestInitializeAttribute", "TestCleanupAttribute",
+        "ClassInitializeAttribute", "ClassCleanupAttribute",
+    };
+
+    private static bool HasTestAttribute(ISymbol s)
+    {
+        foreach (var a in s.GetAttributes())
+            if (a.AttributeClass is { } ac && TestAttributeNames.Contains(ac.Name)) return true;
+        return false;
+    }
+
+    // "ends with a PascalCase 'Test'/'Tests' word". Case-SENSITIVE (Ordinal) on purpose: domain words
+    // like Latest / Contest / Manifest / Request end in a lowercase 't' and must NOT count as tests.
+    private static bool TestNameSuffix(string name) =>
+        name.EndsWith("Tests", StringComparison.Ordinal) || name.EndsWith("Test", StringComparison.Ordinal);
+
+    /// True for anything that belongs to test code. Used by --no-test to keep the (large, noisy) test
+    /// branches out of the graph. Recognises: a [Fact]/[Theory]/[Test]/[TestMethod]/... member or type;
+    /// a *Test(s) type (or nested in one); a member of a *Test(s) assembly; a *Test(s) namespace segment.
+    public static bool IsTestSymbol(ISymbol? s)
+    {
+        if (s == null) return false;
+
+        // the symbol itself + every containing type: attributes and *Test(s) type names
+        for (ISymbol? cur = s; cur != null; cur = cur.ContainingType)
+        {
+            if ((cur is IMethodSymbol || cur is INamedTypeSymbol) && HasTestAttribute(cur)) return true;
+            if (cur is INamedTypeSymbol t && TestNameSuffix(t.Name)) return true;
+        }
+
+        // test project / assembly (e.g. "MyApp.Tests", "MyApp.UnitTests", "MyApp.Test")
+        if (s.ContainingAssembly?.Name is { } asm && TestNameSuffix(asm)) return true;
+
+        // a Test(s) namespace segment (e.g. "MyApp.Tests.Orders")
+        for (var ns = s.ContainingNamespace; ns is { IsGlobalNamespace: false }; ns = ns.ContainingNamespace)
+            if (TestNameSuffix(ns.Name)) return true;
+
+        return false;
+    }
+
     public async Task LoadAsync(string solutionPath, bool offline = false)
     {
         SolutionDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)) ?? "";
@@ -371,6 +425,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         foreach (var c in callers)
         {
             if (c.CallingSymbol is not IMethodSymbol cm) continue;
+            if (ExcludeTests && IsTestSymbol(cm)) continue;     // --no-test: hide test callers
             foreach (var loc in c.Locations)
             {
                 sb.AppendLine($"{Sig(cm)}  ->called at {Rel(loc)}  {(c.IsDirect ? "" : "(indirect)")}");
@@ -394,6 +449,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         {
             if (model.GetSymbolInfo(inv).Symbol is IMethodSymbol callee)
             {
+                if (ExcludeTests && IsTestSymbol(callee)) continue;     // --no-test
                 var line = inv.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
                 var key = $"{Sig(callee)}@{line}";
                 if (seen.Add(key))
@@ -413,6 +469,8 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         foreach (var r in refs)
             foreach (var loc in r.Locations)
             {
+                // --no-test: drop references that live in a test project (the bulk of reference noise)
+                if (ExcludeTests && loc.Document?.Project?.Name is { } pn && TestNameSuffix(pn)) continue;
                 sb.AppendLine(Rel(loc.Location));
                 if (++n >= 50) { sb.AppendLine("... (truncated)"); return sb.ToString(); }
             }
@@ -487,6 +545,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             foreach (var c in callers)
             {
                 if (c.CallingSymbol is not IMethodSymbol caller) continue;
+                if (ExcludeTests && IsTestSymbol(caller)) continue;     // --no-test: don't route through tests
                 if (visited.Contains(caller)) continue;
                 visited.Add(caller);
                 calledBy[caller] = current; // caller calls 'current' (direction toward the target)
@@ -535,7 +594,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             if (callerCache.TryGetValue(node, out var cached)) return cached;
             var list = new List<IMethodSymbol>();
             foreach (var c in await SymbolFinder.FindCallersAsync(node, _solution))
-                if (c.CallingSymbol is IMethodSymbol m) list.Add(m);
+                if (c.CallingSymbol is IMethodSymbol m && !(ExcludeTests && IsTestSymbol(m))) list.Add(m);
             callerCache[node] = list;
             return list;
         }
@@ -950,6 +1009,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             if (!ctor.Locations.Any(l => l.IsInSource)) continue;
             if (seen.Add(Sig(ctor))) result.Add(ctor);
         }
+        if (ExcludeTests) result.RemoveAll(IsTestSymbol);
         return result;
     }
 
@@ -1023,6 +1083,7 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             }
         }
         catch { /* not critical - an empty caller set just yields a smaller map */ }
+        if (ExcludeTests) result.RemoveAll(IsTestSymbol);
         return result;
     }
 
