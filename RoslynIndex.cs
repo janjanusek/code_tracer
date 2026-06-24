@@ -143,6 +143,16 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
     private static string SigNamed(IMethodSymbol m) =>
         $"{m.ContainingType?.Name}.{m.Name}({string.Join(", ", m.Parameters.Select(p => $"{p.Type.Name} {p.Name}"))})";
 
+    // Readable "Type.Member" for the graph: a ctor's metadata name is ".ctor" and an accessor's is
+    // "get_X" - render them as Type.ctor / Type.Prop.get|set instead of the raw, double-dotted names.
+    private static string DisplayName(IMethodSymbol m) => m.MethodKind switch
+    {
+        MethodKind.Constructor or MethodKind.StaticConstructor => $"{m.ContainingType?.Name}.ctor",
+        MethodKind.PropertyGet => $"{m.ContainingType?.Name}.{m.AssociatedSymbol?.Name}.get",
+        MethodKind.PropertySet => $"{m.ContainingType?.Name}.{m.AssociatedSymbol?.Name}.set",
+        _ => $"{m.ContainingType?.Name}.{m.Name}",
+    };
+
     // ---- symbol resolution -------------------------------------------------
 
     /// Finds all declarations whose name matches (case-insensitive).
@@ -166,16 +176,94 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
     /// Resolves a method from "Class" + "Method". If several match (overloads, or same class
     /// name in different namespaces), it WARNS and lists them, then uses the first - there is no
     /// overload/namespace disambiguation, so make the class name as specific as the codebase allows.
-    public async Task<IMethodSymbol?> ResolveMethod(string className, string methodName)
+    /// All method-like symbols for "Class.Member": ordinary methods, plus the type's source constructors
+    /// when the name denotes one ("Class.Class" / "Class.ctor" / "Class..ctor" / "Class.new").
+    private async Task<List<IMethodSymbol>> GatherMethods(string className, string methodName)
     {
-        var decls = await FindDeclarations(methodName);
-        var methods = decls.OfType<IMethodSymbol>()
+        var methods = (await FindDeclarations(methodName)).OfType<IMethodSymbol>()
             .Where(m => m.ContainingType != null &&
                         string.Equals(m.ContainingType.Name, className, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        WarnIfAmbiguous($"{className}.{methodName}", methods.Cast<ISymbol>().ToList());
-        return methods.FirstOrDefault();
+        if (methods.Count == 0 && IsCtorRef(className, methodName))
+            foreach (var type in (await FindDeclarations(className)).OfType<INamedTypeSymbol>()
+                         .Where(t => string.Equals(t.Name, className, StringComparison.OrdinalIgnoreCase)))
+                methods.AddRange(type.InstanceConstructors.Where(c => c.Locations.Any(l => l.IsInSource)));
+        return methods;
     }
+
+    /// Resolves a method/constructor from "Class" + "Member". On a collision (overloads, or the same class
+    /// name in different namespaces) it ASKS which one (listing full namespace + signature + location).
+    public async Task<IMethodSymbol?> ResolveMethod(string className, string methodName) =>
+        PickSymbols($"{className}.{methodName}", await GatherMethods(className, methodName), allowAll: false).FirstOrDefault();
+
+    /// Resolve map root(s): a method/ctor, else a property's get/set accessor. Interactive on a collision,
+    /// with an "all" option to map every match at once.
+    public async Task<List<IMethodSymbol>> ResolveMapRoots(string? className, string? methodName, string? filePath, int line)
+    {
+        if (className == null)
+        {
+            var byLoc = await ResolveByLocation(filePath!, line);
+            return byLoc != null ? new List<IMethodSymbol> { byLoc } : new List<IMethodSymbol>();
+        }
+        var methods = await GatherMethods(className, methodName!);
+        if (methods.Count > 0)
+            return PickSymbols($"{className}.{methodName}", methods, allowAll: true);
+
+        // not a method/ctor -> a property: map the get (else set) accessor of the chosen property
+        var props = (await FindDeclarations(methodName!)).OfType<IPropertySymbol>()
+            .Where(p => p.ContainingType != null &&
+                        string.Equals(p.ContainingType.Name, className, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var chosen = PickSymbols($"{className}.{methodName}", props, allowAll: true);
+        if (chosen.Count > 0)
+            Console.Error.WriteLine($"[map] '{className}.{methodName}' is a property - mapping its accessor.");
+        return chosen.Select(p => p.GetMethod ?? p.SetMethod).Where(a => a != null).Cast<IMethodSymbol>().ToList();
+    }
+
+    private static bool IsCtorRef(string className, string methodName) =>
+        string.Equals(methodName, className, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(methodName, "ctor", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(methodName, ".ctor", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(methodName, "new", StringComparison.OrdinalIgnoreCase);
+
+    /// When several symbols match, list them (full namespace + signature + location) and let the user pick
+    /// one - or, when allowAll, 'a' for all. Falls back to the first when input isn't available (piped/empty).
+    private List<T> PickSymbols<T>(string what, List<T> candidates, bool allowAll) where T : ISymbol
+    {
+        candidates = candidates.GroupBy(s => s, SymbolEqualityComparer.Default).Select(g => g.First()).ToList();
+        if (candidates.Count <= 1) return candidates;
+
+        Console.Error.WriteLine($"[ambiguous] {candidates.Count} matches for \"{what}\":");
+        for (int i = 0; i < candidates.Count; i++)
+            Console.Error.WriteLine($"   [{i + 1}] {candidates[i].ToDisplayString(FullSig)}   {WhereOf(candidates[i])}");
+        Console.Error.Write(allowAll ? "   pick a number, or 'a' for all: " : "   pick a number: ");
+
+        // keep only letters/digits - strips a BOM / stray whitespace that piped input can prepend
+        var input = new string((Console.ReadLine() ?? "").Where(char.IsLetterOrDigit).ToArray());
+        if (allowAll && (string.Equals(input, "a", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(input, "all", StringComparison.OrdinalIgnoreCase)))
+            return candidates;
+        if (int.TryParse(input, out var n) && n >= 1 && n <= candidates.Count)
+            return new List<T> { candidates[n - 1] };
+
+        Console.Error.WriteLine($"[ambiguous] no valid choice ('{input}') - using [1].");
+        return new List<T> { candidates[0] };
+    }
+
+    private string WhereOf(ISymbol s)
+    {
+        var l = s.Locations.FirstOrDefault(x => x.IsInSource);
+        return l != null ? Rel(l) : "";
+    }
+
+    private static readonly SymbolDisplayFormat FullSig = new SymbolDisplayFormat(
+        typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+        memberOptions: SymbolDisplayMemberOptions.IncludeParameters | SymbolDisplayMemberOptions.IncludeContainingType,
+        parameterOptions: SymbolDisplayParameterOptions.IncludeType,
+        miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes);
+
+    /// Full, unambiguous label for a symbol: namespace + type + signature (used to disambiguate "all").
+    public string FullLabel(IMethodSymbol m) => m.ToDisplayString(FullSig);
 
     /// Resolves a property (or indexer) from "Class" + "Name". Same ambiguity handling as methods.
     public async Task<IPropertySymbol?> ResolveProperty(string className, string propName)
@@ -854,6 +942,14 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             if (!callee.Locations.Any(l => l.IsInSource)) continue;     // skip framework/extern
             if (seen.Add(Sig(callee))) result.Add(callee);
         }
+        // `new Foo(...)` (and target-typed `new()`) invokes Foo's constructor - track it like any other
+        // callee, so the call graph follows object construction. Framework ctors (new List<>()) are skipped.
+        foreach (var oce in scanRoot.DescendantNodes().OfType<BaseObjectCreationExpressionSyntax>())
+        {
+            if (model.GetSymbolInfo(oce).Symbol is not IMethodSymbol ctor) continue;
+            if (!ctor.Locations.Any(l => l.IsInSource)) continue;
+            if (seen.Add(Sig(ctor))) result.Add(ctor);
+        }
         return result;
     }
 
@@ -934,16 +1030,10 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
     /// (down=false) breadth-first up to `maxDepth`, hard-capped at `maxNodes`. Deterministic (no model).
     /// `down` decides edge direction so the tree always reads top→bottom in calling order. Returns null
     /// if the root can't be resolved; the out `truncated` flag reports whether the node cap was hit.
-    public async Task<(Diagram.Graph graph, bool truncated, List<(string display, string where, string code)> bodies)?> BuildMap(
-        string? className, string? methodName, string? filePath, int line,
-        bool down, int maxDepth, int maxNodes, bool withBodies = false, int peek = 0)
+    public async Task<(Diagram.Graph graph, bool truncated, List<(string display, string where, string code)> bodies)> BuildMap(
+        IMethodSymbol root, bool down, int maxDepth, int maxNodes, bool withBodies = false, int peek = 0)
     {
-        var root = className != null
-            ? await ResolveMethod(className, methodName!)
-            : await ResolveByLocation(filePath!, line);
-        if (root == null) return null;
-
-        string Display(IMethodSymbol m) => $"{m.ContainingType?.Name}.{m.Name}";
+        string Display(IMethodSymbol m) => DisplayName(m);
         string Where(IMethodSymbol m)
         {
             var l = m.Locations.FirstOrDefault(x => x.IsInSource);

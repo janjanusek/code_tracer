@@ -374,7 +374,21 @@ codetracer map -s CodeTracer.sln --method "Agent.RunAsync"
 
 # one direction only (then you can use --out):
 codetracer map -s CodeTracer.sln --method "LlmClient.ChatAsync" --up --out who-calls-llm.md
+
+# a CONSTRUCTOR as root — who builds this type? ("Class.Class" or "Class.ctor")
+codetracer map -s CodeTracer.sln --method "LlmClient.ctor" --up
+# a PROPERTY as root — maps its get/set accessor
+codetracer map -s CodeTracer.sln --method "Options.Solution" --down
 ```
+
+The root isn't limited to plain methods: **`--method "Class.Class"`** (or `"Class.ctor"`) maps a
+**constructor** (and `new Foo(...)` calls now show up as callees everywhere), and **`--method
+"Class.Property"`** maps a **property's** get/set accessor.
+
+**Overloads / name collisions are resolved by asking, not guessing.** If the name matches more than one
+symbol — overloads (`Bar(int)` vs `Bar(string)`) or the same class name in two namespaces — CodeTracer
+lists them with their **full namespace + signature + location** and lets you pick the exact one, or
+**`a` for all** (it maps each match to its own file). 100% unambiguous.
 
 - **`--down`** (`--callees`) — what the root calls, transitively. *"What does this touch?"*
 - **`--up`** (`--callers`) — what reaches the root, transitively. **Impact analysis:** *"if I change
