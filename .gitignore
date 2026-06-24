@@ -18,7 +18,6 @@ project.assets.json
 
 # ---- IDE / editor ----
 .vs/
-.vscode/
 .idea/
 *.user
 *.suo
@@ -43,3 +42,7 @@ outputs/
 # ---- scratch files from local runs ----
 _*.md
 _*.err
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore

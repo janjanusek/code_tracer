@@ -494,6 +494,7 @@ to the full file in your repo (path is taken relative to the `.sln` directory).
 | `--num-ctx` | both | `16384` | context window size |
 | `--num-predict` | both | `4096` | token cap for explain output |
 | `--temperature` | both | `0` / `0.2` | 0 for decisions, 0.2 for explain |
+| `--no-test` / `--skip-tests` | all | off | drop test code from the call-graph — `[Fact]`/`[Theory]`/`[Test]`/`[TestMethod]`/… members & types, `*Test(s)` types, and members of `*Test(s)` assemblies / namespaces. Tests add huge branchy noise; this keeps the graph about the real code |
 | `--offline` / `--no-restore` | both | off | load using only the local NuGet cache (VS's restore); never contact a feed, `nuget.config` untouched |
 
 ---

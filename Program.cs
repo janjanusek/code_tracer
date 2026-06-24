@@ -60,6 +60,8 @@ static async Task<int> RunTrace(Options opts)
     var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
     if (!await TryLoad(index, opts.Solution!, opts.Offline)) return 1;
+    index.ExcludeTests = opts.NoTest;   // --no-test: keep test code out of the call-graph
+    if (opts.NoTest) Console.Error.WriteLine("[cfg] --no-test: excluding test code (xUnit/NUnit/MSTest, *Test(s) types & assemblies)");
 
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
@@ -153,6 +155,8 @@ static async Task<int> RunExplain(Options opts)
     var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
     if (!await TryLoad(index, opts.Solution!, opts.Offline)) return 1;
+    index.ExcludeTests = opts.NoTest;   // --no-test: keep test code out of the call-graph
+    if (opts.NoTest) Console.Error.WriteLine("[cfg] --no-test: excluding test code (xUnit/NUnit/MSTest, *Test(s) types & assemblies)");
 
     var llm = new LlmClient(opts.Api, opts.Model, opts.ApiStyle, opts.NumCtx);
     await ReportVersion(llm);
@@ -309,6 +313,8 @@ static async Task<int> RunMap(Options opts)
     var sw = Stopwatch.StartNew();
     var index = new RoslynIndex();
     if (!await TryLoad(index, opts.Solution!, opts.Offline)) return 1;
+    index.ExcludeTests = opts.NoTest;   // --no-test: keep test code out of the call-graph
+    if (opts.NoTest) Console.Error.WriteLine("[cfg] --no-test: excluding test code (xUnit/NUnit/MSTest, *Test(s) types & assemblies)");
 
     // Resolve the root(s). On a collision (overloads / same class in different namespaces) the user is
     // asked which one — or 'all', in which case we map every match (one set of files per root).
@@ -499,6 +505,7 @@ static Options ParseArgs(string[] args)
             case "--no-collapse":             o.Collapse = false; break;
             case "--no-llm":                  o.UseLlm = false; break;
             case "--offline": case "--no-restore": case "--from-cache":  o.Offline = true; break;
+            case "--no-test": case "--no-tests": case "--skip-tests": case "--exclude-tests":  o.NoTest = true; break;
             case "--all-paths": case "--brute": case "--deep":  o.AllPaths = true; break;
             case "--with-bodies": case "--code":  o.WithBodies = true; break;
             case "--annotate": case "--why":      o.Annotate = true; break;
@@ -599,6 +606,10 @@ MAP options:    (deterministic overview - which methods a point reaches; no mode
       --out           single direction only: save to this path (both directions always auto-name)
 
 SHARED options:
+      --no-test       (--no-tests / --skip-tests / --exclude-tests) drop test code from the
+                      call-graph: methods/types marked [Fact]/[Theory]/[Test]/[TestMethod]/...,
+                      *Test(s) types, and members of *Test(s) assemblies & namespaces. Tests
+                      add huge branchy noise to a map - this keeps the graph about the real code.
       --offline       (--no-restore / --from-cache) load the solution using ONLY the local NuGet
                       cache (what Visual Studio already restored) - no feed is contacted, your
                       nuget.config is untouched. Build once in VS, then run with --offline. Needed
@@ -677,6 +688,8 @@ class Options
     public bool Collapse = true;   // --no-collapse: don't wrap each method's source in a <details> (fold-able) block
 
     // shared
+    public bool NoTest = false;    // --no-test: drop test code (xUnit/NUnit/MSTest, *Test(s) types, *.Tests
+                                   //            assemblies/namespaces) from the call-graph - they bloat it
     public bool Offline = false;   // --offline/--no-restore/--from-cache: load using only the local
                                    // NuGet cache (what VS already restored); never contact a feed
     public string Model = "gemma4:latest";
