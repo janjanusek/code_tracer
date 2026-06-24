@@ -545,7 +545,9 @@ EXPLAIN options:
       --out           save the result to a .md file
 
 MAP options:    (deterministic overview - which methods a point reaches; no model)
-      --method        "Class.Method" - the root of the map
+      --method        "Class.Method" - the root of the map. Also accepts a CONSTRUCTOR
+                      ("Class.Class" or "Class.ctor") and a PROPERTY ("Class.Property",
+                      maps its get/set accessor).
       --file + --line alternative: file and a line inside the root method
       --down          (--callees) map ONLY downstream (what the root calls)
       --up            (--callers) map ONLY upstream (what reaches the root - impact analysis)

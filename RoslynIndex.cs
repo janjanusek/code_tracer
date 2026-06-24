@@ -143,6 +143,16 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
     private static string SigNamed(IMethodSymbol m) =>
         $"{m.ContainingType?.Name}.{m.Name}({string.Join(", ", m.Parameters.Select(p => $"{p.Type.Name} {p.Name}"))})";
 
+    // Readable "Type.Member" for the graph: a ctor's metadata name is ".ctor" and an accessor's is
+    // "get_X" - render them as Type.ctor / Type.Prop.get|set instead of the raw, double-dotted names.
+    private static string DisplayName(IMethodSymbol m) => m.MethodKind switch
+    {
+        MethodKind.Constructor or MethodKind.StaticConstructor => $"{m.ContainingType?.Name}.ctor",
+        MethodKind.PropertyGet => $"{m.ContainingType?.Name}.{m.AssociatedSymbol?.Name}.get",
+        MethodKind.PropertySet => $"{m.ContainingType?.Name}.{m.AssociatedSymbol?.Name}.set",
+        _ => $"{m.ContainingType?.Name}.{m.Name}",
+    };
+
     // ---- symbol resolution -------------------------------------------------
 
     /// Finds all declarations whose name matches (case-insensitive).
@@ -173,9 +183,26 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             .Where(m => m.ContainingType != null &&
                         string.Equals(m.ContainingType.Name, className, StringComparison.OrdinalIgnoreCase))
             .ToList();
+        // Constructor: C# forbids a member named like its type, so a ctor is referenced as "Class.Class",
+        // "Class.ctor", "Class..ctor" or "Class.new" - resolve it from the type's source constructors.
+        if (methods.Count == 0 && IsCtorRef(className, methodName))
+        {
+            var type = (await FindDeclarations(className)).OfType<INamedTypeSymbol>()
+                .FirstOrDefault(t => string.Equals(t.Name, className, StringComparison.OrdinalIgnoreCase));
+            if (type != null)
+                methods = type.InstanceConstructors
+                    .Where(c => c.Locations.Any(l => l.IsInSource))   // source ctors only (skip the implicit default)
+                    .ToList();
+        }
         WarnIfAmbiguous($"{className}.{methodName}", methods.Cast<ISymbol>().ToList());
         return methods.FirstOrDefault();
     }
+
+    private static bool IsCtorRef(string className, string methodName) =>
+        string.Equals(methodName, className, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(methodName, "ctor", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(methodName, ".ctor", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(methodName, "new", StringComparison.OrdinalIgnoreCase);
 
     /// Resolves a property (or indexer) from "Class" + "Name". Same ambiguity handling as methods.
     public async Task<IPropertySymbol?> ResolveProperty(string className, string propName)
@@ -854,6 +881,14 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
             if (!callee.Locations.Any(l => l.IsInSource)) continue;     // skip framework/extern
             if (seen.Add(Sig(callee))) result.Add(callee);
         }
+        // `new Foo(...)` (and target-typed `new()`) invokes Foo's constructor - track it like any other
+        // callee, so the call graph follows object construction. Framework ctors (new List<>()) are skipped.
+        foreach (var oce in scanRoot.DescendantNodes().OfType<BaseObjectCreationExpressionSyntax>())
+        {
+            if (model.GetSymbolInfo(oce).Symbol is not IMethodSymbol ctor) continue;
+            if (!ctor.Locations.Any(l => l.IsInSource)) continue;
+            if (seen.Add(Sig(ctor))) result.Add(ctor);
+        }
         return result;
     }
 
@@ -941,9 +976,19 @@ $@"<?xml version=""1.0"" encoding=""utf-8""?>
         var root = className != null
             ? await ResolveMethod(className, methodName!)
             : await ResolveByLocation(filePath!, line);
+        if (root == null && className != null)
+        {
+            // Not a method/ctor? Try a property and map its accessor (getter, else setter) - so you can
+            // map a property's get/set logic the same way as a method.
+            var prop = await ResolveProperty(className, methodName!);
+            root = prop?.GetMethod ?? prop?.SetMethod;
+            if (root != null)
+                Console.Error.WriteLine($"[map] '{className}.{methodName}' is a property - mapping its " +
+                                        $"{(prop!.GetMethod != null ? "getter" : "setter")}.");
+        }
         if (root == null) return null;
 
-        string Display(IMethodSymbol m) => $"{m.ContainingType?.Name}.{m.Name}";
+        string Display(IMethodSymbol m) => DisplayName(m);
         string Where(IMethodSymbol m)
         {
             var l = m.Locations.FirstOrDefault(x => x.IsInSource);
