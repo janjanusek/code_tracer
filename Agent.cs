@@ -355,8 +355,12 @@ fall back to find_callers from the target going UP one hop at a time, then finis
         {
             try
             {
-                await Compat.WriteAllTextAsync(_outPath!, output + "\n");
+                var saved = output + "\n";
+                await Compat.WriteAllTextAsync(_outPath!, saved);
                 Console.Error.WriteLine($"[trace] saved to {_outPath}");
+                var html = await HtmlViewer.WriteSiblingAsync(_outPath!, saved);
+                if (html != null)
+                    Console.Error.WriteLine($"[viewer] interactive graph (fit-to-window, zoom/pan) -> {html}");
             }
             catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
         }

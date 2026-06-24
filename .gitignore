@@ -37,6 +37,9 @@ explain_*.md
 # ---- auto-saved results when --out is omitted (default-on safety net) ----
 codetracer-*.md
 
+# ---- generated results now land here: timestamped .md + self-contained .html viewer ----
+outputs/
+
 # ---- scratch files from local runs ----
 _*.md
 _*.err

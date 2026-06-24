@@ -198,8 +198,8 @@ one method as the **root** and it expands the call graph until it runs out. **Fu
 ```bash
 # default: BOTH directions, written to TWO files
 dotnet run -- map -s App.sln --method "Agent.RunAsync"
-#   -> codetracer-map-down-Agent.RunAsync.md   (what it calls — downstream)
-#   -> codetracer-map-up-Agent.RunAsync.md     (what reaches it — callers / impact)
+#   -> outputs/<date>_<time>_map-down_<sln>_Agent.RunAsync.md + .html  (what it calls — downstream)
+#   -> outputs/<date>_<time>_map-up_<sln>_Agent.RunAsync.md   + .html  (what reaches it — callers)
 
 # one direction (then --out applies):
 dotnet run -- map -s App.sln --method "LlmClient.ChatAsync" --up --out who-calls-llm.md
@@ -385,13 +385,18 @@ generating/processing tokens — the Roslyn analysis itself is fast.
 
 A long deep run is **never lost**, even if you forget `--out`:
 
-- **Auto-save (default on, no flag).** If you don't pass `--out`, the result is still saved — to a
-  discoverable file in the current directory: `codetracer-explain-<Class.Method>.md` /
-  `codetracer-trace-<from>-to-<to>.md`. Pass `--out <file>` to choose the path instead.
+- **Auto-save (default on, no flag).** If you don't pass `--out`, the result is still saved — into an
+  **`outputs/`** folder (not the repo root), named **`<date>_<time>_<kind>_<sln>_<label>.md`** so the
+  folder sorts chronologically and runs never clobber each other (e.g. the same overload mapped from a
+  different `.sln`). Pass `--out <file>` to choose an exact path instead.
+- **Self-contained HTML viewer.** Beside every auto-saved `.md` you also get a `.html` that **fits the
+  whole call-graph to your window** (no scrolling) with **wheel-zoom** and **drag-pan** — for graphs too
+  big to read at natural size. `mermaid.js` is embedded in the page, so it opens with **no internet**
+  (locked-down / Artifactory networks). The `.md` keeps its ASCII + Mermaid and renders on GitHub as before.
 - **Incremental save.** In `explain`, the file is flushed **after every method** (and after the
   synthesis / plain-words / call-flow). So at any moment the file holds everything finished so far.
 - **Watch it live.** Because it's written progressively, you can open the file **read-only** and
-  watch the knowledge accumulate — e.g. `Get-Content codetracer-explain-*.md -Wait` (PowerShell)
+  watch the knowledge accumulate — e.g. `Get-Content outputs/*_explain_*.md -Wait` (PowerShell)
   or `tail -f` (bash).
 - **Live ETA.** Each `[explain] (i/N) …` line shows `· ~Xm left`, averaged from the methods
   already done (remaining work = methods left + the synthesis pass).
