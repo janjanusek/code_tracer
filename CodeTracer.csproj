@@ -28,6 +28,16 @@
     <None Remove="samples/**/*" />
   </ItemGroup>
 
+  <!-- mermaid.min.js (vendored, ~2.6 MB UMD build) embedded into the binary so the generated HTML
+       viewer is fully self-contained and works with NO internet access (locked-down / Artifactory
+       environments). Removed from the default None glob first to avoid a duplicate-item build error. -->
+  <ItemGroup>
+    <None Remove="assets/mermaid.min.js" />
+    <EmbeddedResource Include="assets/mermaid.min.js">
+      <LogicalName>mermaid.min.js</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Build.Locator" Version="1.7.8" />
     <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="4.9.2" />

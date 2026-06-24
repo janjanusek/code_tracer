@@ -17,6 +17,13 @@ what the analysis found (the path / call-tree), drawn as **ASCII** (readable in 
 a locked-down wiki) **and** **Mermaid** (renders as graphics on GitHub / VS Code). Deterministic,
 no extra model call — so you grasp the shape before reading a word of prose.
 
+Results are written to **`outputs/`** (not the repo root), named **`<date>_<time>_<kind>_<sln>_<label>`**
+so the folder sorts chronologically and two runs never clobber each other (e.g. the same overload
+mapped from a different `.sln`). Alongside every `.md` you also get a **self-contained `.html` viewer**:
+it **fits the whole graph to your window** (no scrolling to find it) with **mouse-wheel zoom** and
+**drag-to-pan** — built for huge call-graphs. `mermaid.js` is embedded in the page, so the viewer opens
+with **no internet access** (locked-down / Artifactory networks). The `.md` is untouched.
+
 Roslyn does the **precise** analysis (symbols, references, call graph) — nothing is guessed by
 the model; the model only **explains the code it is given**.
 
@@ -367,10 +374,10 @@ with **no fixed destination**. It's **fully deterministic** (pure Roslyn, **0 mo
 fast and runs over the whole solution.
 
 ```bash
-# default: BOTH directions, written to TWO files
+# default: BOTH directions, written to TWO files (+ a .html viewer each) under outputs/
 codetracer map -s CodeTracer.sln --method "Agent.RunAsync"
-#   -> codetracer-map-down-Agent.RunAsync.md   (what it calls — downstream)
-#   -> codetracer-map-up-Agent.RunAsync.md     (what reaches it — callers / impact)
+#   -> outputs/<date>_<time>_map-down_CodeTracer_Agent.RunAsync.md + .html  (what it calls — downstream)
+#   -> outputs/<date>_<time>_map-up_CodeTracer_Agent.RunAsync.md   + .html  (what reaches it — callers)
 
 # one direction only (then you can use --out):
 codetracer map -s CodeTracer.sln --method "LlmClient.ChatAsync" --up --out who-calls-llm.md
@@ -562,8 +569,10 @@ against CodeTracer's own source** — open them and you see exactly what you get
   `trace`** on `gemma3n:e2b`: barely slower than `gemma4:latest` here (path-finding is deterministic;
   the model only writes the notes + summary), so `trace` is a great fit for a small local model.
 
-Every run also **auto-saves** (no `--out` needed) and **saves incrementally**, so a long deep run
-is never lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and keep what's done.
+Every run also **auto-saves** to **`outputs/`** (no `--out` needed) and **saves incrementally**, so a
+long deep run is never lost — open the file read-only to watch it fill in, or `Ctrl+C` to stop and keep
+what's done. Each `.md` gets a side-by-side **self-contained `.html` viewer** (fit-to-window + zoom/pan,
+fully offline). Passing `--out <path>` still writes exactly where you point it.
 
 ---
 

@@ -68,7 +68,7 @@ static async Task<int> RunTrace(Options opts)
     bool autoOut = string.IsNullOrWhiteSpace(opts.Out);
     var traceLabel = direct ? $"{opts.From}-to-{opts.To}"
                             : $"{opts.Endpoint}-to-{Path.GetFileNameWithoutExtension(opts.TargetFile)}";
-    var outPath = autoOut ? AutoOutPath("trace", traceLabel) : opts.Out!;
+    var outPath = autoOut ? AutoOutPath("trace", traceLabel, opts.Solution) : opts.Out!;
     if (autoOut)
         Console.Error.WriteLine($"[trace] auto-saving result to {outPath}  (pass --out <file> to choose the path)");
 
@@ -93,15 +93,39 @@ static async Task<int> RunTrace(Options opts)
     return 0;
 }
 
-// A discoverable default output path, used when --out is not given so a run is never lost.
-// e.g. ("explain", "Agent.GetAction") -> "codetracer-explain-Agent.GetAction.md" in the current dir.
-static string AutoOutPath(string kind, string? label)
+// Discoverable default output path when --out is omitted, so a run is never lost. Everything lands in
+// ./outputs/ (not the repo root) named "<date>_<time>_<kind>_<sln>_<label>.md": date+time FIRST so the
+// folder sorts chronologically, then what's inside. The shared run timestamp (HtmlViewer.RunStamp) plus
+// the solution name mean two runs — e.g. the same overload analysed from a DIFFERENT .sln — never
+// overwrite each other. e.g. "outputs/2026-06-24_153012_explain_Big_Agent.GetAction.md".
+static string AutoOutPath(string kind, string? label, string? solution = null)
 {
-    var safe = new string((label ?? "out")
-        .Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_').ToArray());
-    if (string.IsNullOrWhiteSpace(safe)) safe = "out";
-    if (safe.Length > 80) safe = safe[..80];
-    return $"codetracer-{kind}-{safe}.md";
+    static string Clean(string s, int max)
+    {
+        var safe = new string(s.Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_').ToArray());
+        return safe.Length > max ? safe[..max] : safe;
+    }
+    var sln = string.IsNullOrWhiteSpace(solution) ? "" : Clean(Path.GetFileNameWithoutExtension(solution!), 40);
+    var lbl = Clean(string.IsNullOrWhiteSpace(label) ? "out" : label!, 80);
+    if (lbl.Length == 0) lbl = "out";
+    var name = sln.Length > 0
+        ? $"{HtmlViewer.RunStamp}_{kind}_{sln}_{lbl}.md"
+        : $"{HtmlViewer.RunStamp}_{kind}_{lbl}.md";
+    Directory.CreateDirectory("outputs");
+    return Path.Combine("outputs", name);
+}
+
+// Writes a self-contained .html viewer next to a just-saved .md (fits the Mermaid graph to the window,
+// wheel-zoom + drag-pan). No-op when the .md has no graph. Best-effort: a viewer failure never fails a run.
+static async Task EmitHtmlViewer(string mdPath, string mdText)
+{
+    try
+    {
+        var html = await HtmlViewer.WriteSiblingAsync(mdPath, mdText);
+        if (html != null)
+            Console.Error.WriteLine($"[viewer] interactive graph (fit-to-window, zoom/pan) -> {html}");
+    }
+    catch (Exception ex) { Console.Error.WriteLine($"[viewer] skipped ({ex.Message})"); }
 }
 
 // "Namespace.Class.Method" / "Class.Method" -> (Class, Method) using the last two segments.
@@ -188,7 +212,7 @@ static async Task<int> RunExplain(Options opts)
     // NEVER lost just because a flag was forgotten — partial results are flushed as it goes (default ON).
     bool autoOut = string.IsNullOrWhiteSpace(opts.Out);
     var label = cls != null ? $"{cls}.{method}" : $"{Path.GetFileNameWithoutExtension(opts.File)}-L{opts.Line}";
-    var outPath = autoOut ? AutoOutPath("explain", label) : opts.Out!;
+    var outPath = autoOut ? AutoOutPath("explain", label, opts.Solution) : opts.Out!;
 
     string text;
     if (!opts.UseLlm)
@@ -238,6 +262,7 @@ static async Task<int> RunExplain(Options opts)
         Console.Error.WriteLine(autoOut
             ? $"[explain] saved to {outPath}  (pass --out <file> to choose the path)"
             : $"[explain] saved to {outPath}");
+        await EmitHtmlViewer(outPath, text);
     }
     catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
 
@@ -316,12 +341,13 @@ static async Task<int> RunMap(Options opts)
             // single root + single direction honours --out; otherwise auto-name (can't share one path)
             var outPath = (roots.Count == 1 && !both && !string.IsNullOrWhiteSpace(opts.Out))
                 ? opts.Out!
-                : AutoOutPath(down ? "map-down" : "map-up", label);
+                : AutoOutPath(down ? "map-down" : "map-up", label, opts.Solution);
             try
             {
                 await Compat.WriteAllTextAsync(outPath, text);
                 written.Add(outPath);
                 Console.Error.WriteLine($"[map] saved {(down ? "downstream" : "upstream")} map to {outPath}");
+                await EmitHtmlViewer(outPath, text);
             }
             catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
         }
