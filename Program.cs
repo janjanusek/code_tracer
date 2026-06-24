@@ -285,36 +285,46 @@ static async Task<int> RunMap(Options opts)
     var index = new RoslynIndex();
     if (!await TryLoad(index, opts.Solution!, opts.Offline)) return 1;
 
-    var label = cls != null ? $"{cls}.{method}" : $"{Path.GetFileNameWithoutExtension(opts.File)}-L{opts.Line}";
+    // Resolve the root(s). On a collision (overloads / same class in different namespaces) the user is
+    // asked which one — or 'all', in which case we map every match (one set of files per root).
+    var roots = await index.ResolveMapRoots(cls, method, opts.File, opts.Line);
+    if (roots.Count == 0)
+    {
+        Console.Error.WriteLine("[error] root not found - no method, constructor or property by that name (or no source).");
+        return 1;
+    }
     var written = new List<string>();
 
-    foreach (var down in new[] { true, false })
+    for (int ri = 0; ri < roots.Count; ri++)
     {
-        if (down && !doDown) continue;
-        if (!down && !doUp) continue;
+        var root = roots[ri];
+        if (roots.Count > 1)
+            Console.Error.WriteLine($"[map] [{ri + 1}/{roots.Count}] {index.FullLabel(root)}");
 
-        Console.Error.WriteLine($"[map] building {(down ? "downstream (callees)" : "upstream (callers)")} map ...");
-        var built = await index.BuildMap(cls, method, opts.File, opts.Line, down, depth, opts.MaxNodes,
-                                         opts.WithBodies, opts.Peek);
-        if (built == null)
+        foreach (var down in new[] { true, false })
         {
-            Console.Error.WriteLine("[error] root method not found (or has no source available).");
-            return 1;
-        }
-        var (graph, truncated, bodies) = built.Value;
+            if (down && !doDown) continue;
+            if (!down && !doUp) continue;
 
-        var text = RenderMapDoc(graph, down, depth, truncated, bodies);
-        // single direction honours --out; both directions always auto-name (can't share one path)
-        var outPath = (!both && !string.IsNullOrWhiteSpace(opts.Out))
-            ? opts.Out!
-            : AutoOutPath(down ? "map-down" : "map-up", label);
-        try
-        {
-            await Compat.WriteAllTextAsync(outPath, text);
-            written.Add(outPath);
-            Console.Error.WriteLine($"[map] saved {(down ? "downstream" : "upstream")} map to {outPath}");
+            Console.Error.WriteLine($"[map] building {(down ? "downstream (callees)" : "upstream (callers)")} map ...");
+            var (graph, truncated, bodies) = await index.BuildMap(root, down, depth, opts.MaxNodes, opts.WithBodies, opts.Peek);
+
+            var baseLabel = graph.Nodes.Count > 0 ? graph.Nodes[0].Label
+                          : (cls != null ? $"{cls}.{method}" : $"{Path.GetFileNameWithoutExtension(opts.File)}-L{opts.Line}");
+            var label = roots.Count > 1 ? $"{baseLabel}.{ri + 1}" : baseLabel;   // overloads share a short name
+            var text = RenderMapDoc(graph, down, depth, truncated, bodies);
+            // single root + single direction honours --out; otherwise auto-name (can't share one path)
+            var outPath = (roots.Count == 1 && !both && !string.IsNullOrWhiteSpace(opts.Out))
+                ? opts.Out!
+                : AutoOutPath(down ? "map-down" : "map-up", label);
+            try
+            {
+                await Compat.WriteAllTextAsync(outPath, text);
+                written.Add(outPath);
+                Console.Error.WriteLine($"[map] saved {(down ? "downstream" : "upstream")} map to {outPath}");
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[write error] {ex.Message}"); }
     }
 
     Console.WriteLine();
@@ -547,7 +557,9 @@ EXPLAIN options:
 MAP options:    (deterministic overview - which methods a point reaches; no model)
       --method        "Class.Method" - the root of the map. Also accepts a CONSTRUCTOR
                       ("Class.Class" or "Class.ctor") and a PROPERTY ("Class.Property",
-                      maps its get/set accessor).
+                      maps its get/set accessor). On a collision (overloads, or the same
+                      class in different namespaces) it lists the full signatures and asks
+                      which one - or 'a' for ALL (one map per match).
       --file + --line alternative: file and a line inside the root method
       --down          (--callees) map ONLY downstream (what the root calls)
       --up            (--callers) map ONLY upstream (what reaches the root - impact analysis)

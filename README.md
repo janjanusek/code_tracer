@@ -385,6 +385,11 @@ The root isn't limited to plain methods: **`--method "Class.Class"`** (or `"Clas
 **constructor** (and `new Foo(...)` calls now show up as callees everywhere), and **`--method
 "Class.Property"`** maps a **property's** get/set accessor.
 
+**Overloads / name collisions are resolved by asking, not guessing.** If the name matches more than one
+symbol — overloads (`Bar(int)` vs `Bar(string)`) or the same class name in two namespaces — CodeTracer
+lists them with their **full namespace + signature + location** and lets you pick the exact one, or
+**`a` for all** (it maps each match to its own file). 100% unambiguous.
+
 - **`--down`** (`--callees`) — what the root calls, transitively. *"What does this touch?"*
 - **`--up`** (`--callers`) — what reaches the root, transitively. **Impact analysis:** *"if I change
   this, who breaks?"*
